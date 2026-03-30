@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<!-- Nelson4 operator UI (assets: management-ui package). Bump ?v= on styles.css and app.js together. ASSET_CACHE_BUST: v=19 -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nelson4 — Operator control</title>
+  <link rel="icon" href="/assets/favicon.svg?v=1" type="image/svg+xml" />
+  <style id="management-ui-critical">
+    .health-check-line{display:flex;flex-flow:row nowrap;align-items:center;gap:.5rem .75rem;width:100%;box-sizing:border-box}
+    .health-check-name{flex:0 0 15rem;max-width:15rem;min-width:0;font-weight:600;font-size:.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .health-check-pill-wrap{flex:0 0 2.85rem;text-align:center;flex-shrink:0}
+    .health-check-extra{flex:1 1 auto;min-width:0}
+    .scheduler-controls{display:flex!important;flex-wrap:wrap;align-items:stretch;gap:.5rem;margin-top:.5rem;width:100%;box-sizing:border-box}
+    .scheduler-select{min-width:12rem;padding:.45rem .65rem;border-radius:6px;border:1px solid #2f3336;background:#000;color:#e7e9ea;font-size:.85rem}
+    .scheduler-exec{background:#1d9bf0;color:#fff;border:none;padding:.45rem .9rem;border-radius:6px;cursor:pointer;font-weight:600;font-size:.85rem}
+    .scheduler-result{flex:1 1 12rem;min-width:8rem;min-height:2.25rem;padding:.4rem .55rem;font-size:.7rem;border:1px solid #2f3336;border-radius:6px;background:#0a0c0f;color:#e7e9ea}
+  </style>
+  <link rel="stylesheet" href="/assets/styles.css?v=19" />
+</head>
+<body>
+  <header class="top">
+    <h1>Nelson4 — Operator control</h1>
+    <div class="global-actions">
+      <button type="button" id="btn-reload" title="Clear settings cache">Reload config</button>
+      <span class="hint">Full restart: <code>docker compose restart control-plane</code></span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="dash">Dashboard</button>
+    <button class="tab" data-tab="scheduler-tasks">Scheduler tasks</button>
+    <button class="tab" data-tab="data-acquisition">Data acquisition</button>
+    <button class="tab" data-tab="settings">Settings</button>
+    <button class="tab" data-tab="grafana">Metrics &amp; logs</button>
+  </nav>
+
+  <main>
+    <section id="panel-dash" class="panel active">
+      <h2>System health</h2>
+      <div id="health-panel" class="health-panel">
+        <p class="muted">Loading…</p>
+      </div>
+      <h2>Registered components</h2>
+      <p class="muted scheduler-section-hint">
+        The built-in <strong>management-scheduler</strong> (command dropdown + Execute) appears here.
+      </p>
+      <div id="components-out" class="components-out">Loading…</div>
+    </section>
+
+    <section id="panel-scheduler-tasks" class="panel">
+      <h2>Scheduler tasks — automatic bus publishes</h2>
+      <p class="muted">
+        Define <strong>topic</strong> (RabbitMQ routing key), <strong>payload</strong> (JSON), and <strong>frequency</strong> (seconds).
+        Nelson4: periodic tasks and registry persistence will be wired to Postgres in a later iteration; this tab calls the same API shape as Nelson3.
+      </p>
+      <div class="da-actions">
+        <button type="button" class="btn-primary" id="btn-calendar-sync">Sync Polygon calendar → Postgres</button>
+        <span class="muted hint-inline">Uses engineering-lab calendar sync when the API is implemented server-side.</span>
+      </div>
+      <div id="calendar-sync-result" class="da-register-result" aria-live="polite"></div>
+      <h3>Add task</h3>
+      <form id="form-st-task" class="form-st">
+        <label class="form-label">Name</label>
+        <input name="name" id="st-name" placeholder="e.g. Intraday gather for polygon" required />
+        <label class="form-label">Topic</label>
+        <select name="topic" id="st-topic" required>
+          <option value="data.request">data.request (stock / bars — da.polygon-live or da.trade-station-live)</option>
+          <option value="data.calendar.request">data.calendar.request (holidays / calendar)</option>
+          <option value="model.trigger">model.trigger</option>
+        </select>
+        <label class="form-label">Payload JSON</label>
+          <textarea name="payload_json" id="st-payload" rows="4" placeholder='{"scope":"intraday","target_component":"da.trade-station-live"}'></textarea>
+        <label class="form-label">Frequency (seconds)</label>
+        <input name="frequency_seconds" id="st-freq" type="number" min="10" max="86400" value="300" required />
+        <label class="form-check"><input type="checkbox" name="enabled" id="st-enabled" checked /> Enabled</label>
+        <button type="submit" class="btn-primary">Add task</button>
+      </form>
+      <div id="st-form-result" class="da-register-result" aria-live="polite"></div>
+      <h3>Tasks</h3>
+      <div id="st-tasks-out" class="st-tasks-out muted">Open this tab to load tasks.</div>
+    </section>
+
+    <section id="panel-data-acquisition" class="panel">
+      <h2>Data acquisition — register device</h2>
+      <p class="muted">
+        Register logical devices in the component registry (Postgres). Workers run in <strong>execution-runtime</strong> and other extensions.
+      </p>
+      <div class="da-actions">
+        <button type="button" class="btn-primary" id="btn-da-readiness">Check readiness</button>
+        <span class="muted hint-inline">Verifies Postgres, RabbitMQ, and registry (Nelson4 split: no embedded DA consumers in control-plane).</span>
+      </div>
+      <div id="da-readiness-out" class="da-readiness-out muted">Open this tab or click <strong>Check readiness</strong>.</div>
+      <h3>Register new device</h3>
+      <form id="form-da-device" class="form-da">
+        <label class="form-label">Device ID <span class="muted">(slug, lowercase)</span></label>
+        <input name="device_id" id="da-device-id" placeholder="e.g. polygon-live, ibkr-paper-1" required autocomplete="off" />
+        <label class="form-label">Extension ID</label>
+        <input name="extension_id" id="da-extension-id" placeholder="data_gathering (default)" autocomplete="off" />
+        <label class="form-check"><input type="checkbox" name="enabled" id="da-enabled" /> Enabled (worker may start immediately)</label>
+        <button type="submit" class="btn-primary">Register device</button>
+      </form>
+      <div id="da-register-result" class="da-register-result" aria-live="polite"></div>
+      <h3>Registered data-acquisition devices</h3>
+      <div id="da-devices-out" class="da-devices-out muted">Loading…</div>
+    </section>
+
+    <section id="panel-settings" class="panel">
+      <h2>Database settings</h2>
+      <p class="muted">Non-secret keys only. Values are JSON objects (e.g. <code>{"value": "..."}</code>).</p>
+      <div id="settings-list"></div>
+      <h3>Add / update</h3>
+      <form id="form-setting" class="form-row">
+        <input name="key" placeholder="key e.g. ui.public_grafana_url" required />
+        <input name="value" placeholder='JSON value e.g. {"value":"http://host:3000"}' required />
+        <button type="submit">Save</button>
+      </form>
+    </section>
+
+    <section id="panel-grafana" class="panel">
+      <p class="muted">Embed URL from <code>ui.public_grafana_url</code> (browser must reach host).</p>
+      <iframe id="grafana-frame" title="Grafana" sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+    </section>
+  </main>
+
+  <script src="/assets/app.js?v=19" defer></script>
+</body>
+</html>
