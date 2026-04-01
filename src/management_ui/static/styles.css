@@ -868,3 +868,142 @@ button.btn-da-toggle:disabled {
   border-color: var(--bad);
   color: var(--bad);
 }
+
+.st-copy-cell {
+  vertical-align: middle;
+  text-align: center;
+  width: 2.5rem;
+  padding: 0.35rem 0.25rem !important;
+}
+
+.st-copy-cid {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid #3a4048;
+  background: #2a2f35;
+  color: var(--fg);
+  cursor: pointer;
+  line-height: 0;
+}
+
+.st-copy-cid:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.st-copy-cid.st-copy-cid--empty {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.st-copy-cid.st-copy-cid--done {
+  border-color: #3d9a56;
+  color: #6ecf8c;
+}
+
+.st-copy-icon {
+  display: block;
+}
+
+.st-last-cell {
+  vertical-align: top;
+  max-width: 16rem;
+}
+
+.st-err-line {
+  font-size: 0.72rem;
+  color: #fb9a9e;
+  margin-top: 0.25rem;
+  word-break: break-word;
+  line-height: 1.35;
+}
+
+.st-task-actions button.btn-st-manifest {
+  background: transparent;
+  border-color: #4a535c;
+  font-weight: 500;
+}
+.st-task-actions button.btn-st-manifest:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.st-task-actions button.btn-st-ioc {
+  background: transparent;
+  border-color: #4a535c;
+  font-weight: 500;
+}
+.st-task-actions button.btn-st-ioc:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.st-task-actions button.btn-st-provision {
+  background: #1a3d2e;
+  border-color: #2d6b4f;
+  color: #8fd9b8;
+  font-weight: 500;
+}
+.st-task-actions button.btn-st-provision:hover {
+  border-color: var(--ok);
+  color: #b8f5d0;
+}
+
+.manifest-dialog {
+  border: 1px solid #2f3336;
+  border-radius: 10px;
+  padding: 0;
+  background: var(--card);
+  color: var(--fg);
+  max-width: min(42rem, 92vw);
+  width: 100%;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+.manifest-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+.manifest-dialog-inner {
+  padding: 1rem 1.25rem;
+}
+.manifest-dialog-title {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  word-break: break-word;
+}
+.manifest-pre {
+  margin: 0;
+  max-height: min(60vh, 28rem);
+  overflow: auto;
+  padding: 0.75rem;
+  background: #0a0c0f;
+  border: 1px solid #2f3336;
+  border-radius: 8px;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.manifest-dialog-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  justify-content: flex-end;
+}
+.btn-manifest-close {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: 0.45rem 0.9rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.btn-manifest-close:hover {
+  filter: brightness(1.08);
+}

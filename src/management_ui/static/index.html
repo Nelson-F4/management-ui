@@ -1,9 +1,10 @@
 <!DOCTYPE html>
-<!-- Nelson4 operator UI (assets: management-ui package). Bump ?v= on styles.css and app.js together. ASSET_CACHE_BUST: v=19 -->
+<!-- Nelson4 operator UI (assets: management-ui package). Bump ?v= on styles.css and app.js together. ASSET_CACHE_BUST: v=41 -->
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="nelson4-management-ui-build" content="35" />
   <title>Nelson4 — Operator control</title>
   <link rel="icon" href="/assets/favicon.svg?v=1" type="image/svg+xml" />
   <style id="management-ui-critical">
@@ -15,8 +16,11 @@
     .scheduler-select{min-width:12rem;padding:.45rem .65rem;border-radius:6px;border:1px solid #2f3336;background:#000;color:#e7e9ea;font-size:.85rem}
     .scheduler-exec{background:#1d9bf0;color:#fff;border:none;padding:.45rem .9rem;border-radius:6px;cursor:pointer;font-weight:600;font-size:.85rem}
     .scheduler-result{flex:1 1 12rem;min-width:8rem;min-height:2.25rem;padding:.4rem .55rem;font-size:.7rem;border:1px solid #2f3336;border-radius:6px;background:#0a0c0f;color:#e7e9ea}
+    .st-interval-row{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+    .st-interval-row input[type="number"]{min-width:9rem;padding:.45rem .55rem;border-radius:6px;border:1px solid #2f3336;background:#000;color:#e7e9ea;font-size:.85rem}
+    .st-scheduler-notes ul.st-notes-list{margin:.35rem 0 .75rem 1.1rem;padding:0;font-size:.78rem;line-height:1.45;max-width:52rem}
   </style>
-  <link rel="stylesheet" href="/assets/styles.css?v=19" />
+  <link rel="stylesheet" href="/assets/styles.css?v=29" />
 </head>
 <body>
   <header class="top">
@@ -51,14 +55,11 @@
     <section id="panel-scheduler-tasks" class="panel">
       <h2>Scheduler tasks — automatic bus publishes</h2>
       <p class="muted">
-        Define <strong>topic</strong> (RabbitMQ routing key), <strong>payload</strong> (JSON), and <strong>frequency</strong> (seconds).
-        Nelson4: periodic tasks and registry persistence will be wired to Postgres in a later iteration; this tab calls the same API shape as Nelson3.
+        Define <strong>topic</strong> (RabbitMQ routing key), <strong>payload</strong> (JSON), and <strong>interval</strong> (10s–30 days).
+        <strong>Run now</strong> publishes the full payload; <strong>Test</strong> sends a small connectivity probe on the same topic.
+        Task rows show last run and last test outcomes (Nelson3-style). In-memory list until registry persistence is wired to Postgres.
       </p>
-      <div class="da-actions">
-        <button type="button" class="btn-primary" id="btn-calendar-sync">Sync Polygon calendar → Postgres</button>
-        <span class="muted hint-inline">Uses engineering-lab calendar sync when the API is implemented server-side.</span>
-      </div>
-      <div id="calendar-sync-result" class="da-register-result" aria-live="polite"></div>
+      <div id="st-scheduler-notes" class="muted st-scheduler-notes" aria-live="polite"></div>
       <h3>Add task</h3>
       <form id="form-st-task" class="form-st">
         <label class="form-label">Name</label>
@@ -71,8 +72,21 @@
         </select>
         <label class="form-label">Payload JSON</label>
           <textarea name="payload_json" id="st-payload" rows="4" placeholder='{"scope":"intraday","target_component":"da.trade-station-live"}'></textarea>
-        <label class="form-label">Frequency (seconds)</label>
-        <input name="frequency_seconds" id="st-freq" type="number" min="10" max="86400" value="300" required />
+        <label class="form-label">Interval</label>
+        <div class="st-interval-row">
+          <select id="st-interval-preset" class="scheduler-select" aria-label="Interval preset">
+            <option value="">Custom (seconds)</option>
+            <option value="300">5 minutes</option>
+            <option value="900">15 minutes</option>
+            <option value="3600">1 hour</option>
+            <option value="21600">6 hours</option>
+            <option value="43200">12 hours</option>
+            <option value="86400">1 day</option>
+            <option value="604800">1 week</option>
+            <option value="2592000">30 days (max)</option>
+          </select>
+          <input name="frequency_seconds" id="st-freq" type="number" min="1" max="2592000" value="300" required title="Seconds between runs (1–2592000); 1 = 1 Hz" />
+        </div>
         <label class="form-check"><input type="checkbox" name="enabled" id="st-enabled" checked /> Enabled</label>
         <button type="submit" class="btn-primary">Add task</button>
       </form>
@@ -123,6 +137,26 @@
     </section>
   </main>
 
-  <script src="/assets/app.js?v=19" defer></script>
+  <dialog id="dialog-manifest" class="manifest-dialog" aria-labelledby="dialog-manifest-title">
+    <div class="manifest-dialog-inner">
+      <h3 id="dialog-manifest-title" class="manifest-dialog-title">Extension manifest</h3>
+      <pre id="dialog-manifest-pre" class="manifest-pre" tabindex="0">Loading…</pre>
+      <div class="manifest-dialog-actions">
+        <button type="button" class="btn-manifest-close" id="btn-manifest-close">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="dialog-ioc" class="manifest-dialog" aria-labelledby="dialog-ioc-title">
+    <div class="manifest-dialog-inner">
+      <h3 id="dialog-ioc-title" class="manifest-dialog-title">Extension IoC (effective YAML)</h3>
+      <pre id="dialog-ioc-pre" class="manifest-pre" tabindex="0">Loading…</pre>
+      <div class="manifest-dialog-actions">
+        <button type="button" class="btn-manifest-close" id="btn-ioc-close">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/assets/app.js?v=41" defer></script>
 </body>
 </html>

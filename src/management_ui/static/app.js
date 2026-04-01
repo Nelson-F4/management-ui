@@ -1,3 +1,6 @@
+/** Bumped with index.html `?v=` and `<meta name="nelson4-management-ui-build">` — if this log mismatches DevTools Network, you are not serving this package build. */
+console.info("[Nelson4 operator UI] static build v=35");
+
 const $ = (sel) => document.querySelector(sel);
 
 async function fetchJSON(url, opts) {
@@ -10,6 +13,59 @@ async function fetchJSON(url, opts) {
   } finally {
     clearTimeout(t);
   }
+}
+
+/** FastAPI-style JSON error body: detail string, list of {msg}, or arbitrary object. */
+function formatApiErrorBody(data) {
+  if (!data || typeof data !== "object") return "";
+  const d = data.detail;
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) {
+    return d
+      .map((x) => (x && typeof x.msg === "string" ? x.msg : JSON.stringify(x)))
+      .join("; ");
+  }
+  if (d != null) return JSON.stringify(d);
+  if (data.error) return String(data.error);
+  return JSON.stringify(data);
+}
+
+async function fetchSchedulerTasksJSON() {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const r = await fetch("/api/v1/scheduler/tasks", { signal: ctrl.signal });
+    const text = await r.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = {};
+    }
+    if (!r.ok) {
+      throw new Error(formatApiErrorBody(data) || `HTTP ${r.status}`);
+    }
+    return data;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/** Human-readable scheduler interval; raw seconds in title attribute where used. */
+function formatFrequencyHuman(sec) {
+  const s = Number(sec);
+  if (!Number.isFinite(s) || s < 0) return String(sec);
+  if (s < 60) return `${s} s`;
+  if (s < 3600) {
+    const m = Math.round(s / 60);
+    return `${m} min`;
+  }
+  if (s < 86400) {
+    const h = s / 3600;
+    return `${h % 1 === 0 ? h : h.toFixed(1)} h`;
+  }
+  const d = s / 86400;
+  return `${d % 1 === 0 ? d : d.toFixed(1)} d`;
 }
 
 const CHECK_LABELS = {
@@ -290,6 +346,79 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
+/** Extensions YAML section name activated by this bus topic (for the Tasks table). */
+function schedulerExtensionForTopic(topic, extensionByTopic) {
+  const key = String(topic ?? "").trim();
+  const fromApi = extensionByTopic && key && extensionByTopic[key];
+  if (fromApi) {
+    return fromApi;
+  }
+  if (key === "data.calendar.request") {
+    return "engineering_lab.market_calendar";
+  }
+  if (key === "data.request") {
+    return "engineering_lab.data_acquisition.trade_station";
+  }
+  return "—";
+}
+
+/** Scheduler task: last run or last connectivity probe (Nelson3 / DA-style pill + optional error line). */
+function renderSchedulerOutcomeCell(prefix, t) {
+  const atKey = `${prefix}_at`;
+  const okKey = `${prefix}_ok`;
+  const errKey = `${prefix}_error`;
+  const at = t[atKey];
+  if (!at) {
+    return '<span class="muted">—</span>';
+  }
+  const errRaw = t[errKey];
+  const ok = t[okKey] === true && !(errRaw != null && String(errRaw).length > 0);
+  const pillClass = ok ? "da-test-pill da-test-ok" : "da-test-pill da-test-bad";
+  const label = ok ? "OK" : "Fail";
+  const err = errRaw;
+  const tip = escapeHtml(err ? String(err) : "");
+  const when = escapeHtml(String(at).slice(0, 19)) + "Z";
+  const errLine =
+    !ok && err
+      ? `<div class="st-err-line" title="${tip}">${escapeHtml(String(err))}</div>`
+      : "";
+  return `<span class="${pillClass}" title="${tip}">${label}</span><br/><small class="muted">${when}</small>${errLine}`;
+}
+
+const SVG_CLIPBOARD_ICON = `<svg class="st-copy-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
+
+/** Copy button for last Run now correlation id (Grafana/Loki). */
+function schedulerCopyCorrelationCell(t) {
+  const cid = t.last_run_correlation_id;
+  if (!cid) {
+    return `<button type="button" class="st-copy-cid st-copy-cid--empty" disabled title="Run now to generate a correlation id" aria-label="No correlation id yet">${SVG_CLIPBOARD_ICON}</button>`;
+  }
+  const safe = escapeHtml(String(cid));
+  return `<button type="button" class="st-copy-cid" data-cid="${safe}" title="Copy correlation id (last Run now)" aria-label="Copy correlation id">${SVG_CLIPBOARD_ICON}</button>`;
+}
+
+async function copyTextToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
 function renderEmbeddedWorkersHtml(data) {
   const workers = (data && data.embedded_workers) || [];
   if (!workers.length) return "";
@@ -410,26 +539,64 @@ async function loadSchedulerTasks() {
   el.classList.remove("muted");
   el.textContent = "Loading…";
   try {
-    const data = await fetchJSON("/api/v1/scheduler/tasks");
+    const data = await fetchSchedulerTasksJSON();
     const list = Array.isArray(data.tasks) ? data.tasks : [];
+    const extMap =
+      data.extension_by_topic && typeof data.extension_by_topic === "object"
+        ? data.extension_by_topic
+        : null;
     if (list.length === 0) {
       el.innerHTML =
         '<p class="muted">No tasks yet. Add one above (e.g. <code>data.request</code> every 300s).</p>';
       return;
     }
-    const head = `<thead><tr><th>ID</th><th>Name</th><th>Topic</th><th>Freq (s)</th><th>On</th><th>Last run</th><th>Actions</th></tr></thead>`;
+    const head = `<thead><tr><th>ID</th><th>Name</th><th>Extension</th><th>Topic</th><th>Interval</th><th>On</th><th>Last run</th><th>Last test</th><th title="Last Run now correlation id (Loki/Grafana)">Run ID</th><th>Actions</th></tr></thead>`;
     const body = list
       .map((t) => {
         const payload = escapeHtml(JSON.stringify(t.payload_json || {}));
-        const last = t.last_run_at ? escapeHtml(String(t.last_run_at).slice(0, 19)) + "Z" : "—";
+        const extFromTask =
+          t.extension_section != null && String(t.extension_section).trim() !== ""
+            ? String(t.extension_section).trim()
+            : null;
+        const ext = extFromTask ?? schedulerExtensionForTopic(t.topic, extMap);
+        const extCell =
+          ext === "—"
+            ? "—"
+            : `<code class="st-ext-cell" title="extensions.${escapeHtml(ext)} in execution-runtime YAML">${escapeHtml(ext)}</code>`;
+        const lastRun = renderSchedulerOutcomeCell("last_run", t);
+        const lastConn = renderSchedulerOutcomeCell("last_connectivity", t);
+        const testTitle =
+          ext !== "—"
+            ? `Checks RabbitMQ publish, then GET /v1/extensions/test?section=${ext} on execution-runtime (this extension only).`
+            : "Publishes a connectivity probe to the broker (topic routing key).";
+        const manifestBtn =
+          ext !== "—"
+            ? `<button type="button" class="btn-st-manifest" data-st-manifest="${escapeHtml(ext)}" title="YAML section requirements, persistency, entity refs (from engineering-lab manifest)">Manifest</button>`
+            : "";
+        const iocBtn =
+          ext !== "—"
+            ? `<button type="button" class="btn-st-ioc" data-st-ioc="${escapeHtml(ext)}" title="Resolved extensions.* YAML from the worker (effective first); operator schema docs below">IoC</button>`
+            : "";
+        const prepareDbBtn =
+          ext !== "—"
+            ? `<button type="button" class="btn-st-provision" data-st-provision="${t.id}" title="Schema only: POST execution-runtime /v1/extensions/provision (DDL). When persistency.ensure_tables_on_sync is true, the worker also creates tables on startup / first sync — use this if that flag is false or you need DDL before the worker runs.">Prepare DB</button>`
+            : "";
+        const copyCell = schedulerCopyCorrelationCell(t);
         return `<tr>
           <td>${t.id}</td>
           <td>${escapeHtml(t.name)}</td>
+          <td>${extCell}</td>
           <td><code>${escapeHtml(t.topic)}</code><br/><small class="muted">${payload}</small></td>
-          <td>${t.frequency_seconds}</td>
+          <td title="${escapeHtml(String(t.frequency_seconds))} s">${escapeHtml(formatFrequencyHuman(t.frequency_seconds))}</td>
           <td>${t.enabled ? "Yes" : "No"}</td>
-          <td>${last}</td>
+          <td class="st-last-cell">${lastRun}</td>
+          <td class="st-last-cell">${lastConn}</td>
+          <td class="st-copy-cell">${copyCell}</td>
           <td class="st-task-actions">
+            <button type="button" class="btn-da-test" data-st-test="${t.id}" title="${escapeHtml(testTitle)}">Test</button>
+            ${manifestBtn}
+            ${iocBtn}
+            ${prepareDbBtn}
             <button type="button" data-st-run="${t.id}">Run now</button>
             <button type="button" data-st-toggle="${t.id}" data-st-next="${t.enabled ? "0" : "1"}">${t.enabled ? "Disable" : "Enable"}</button>
             <button type="button" class="st-danger" data-st-del="${t.id}">Delete</button>
@@ -532,26 +699,6 @@ $("#btn-da-readiness")?.addEventListener("click", () => {
   loadDaReadiness();
 });
 
-$("#btn-calendar-sync")?.addEventListener("click", async () => {
-  const out = $("#calendar-sync-result");
-  if (out) {
-    out.className = "da-register-result";
-    out.textContent = "Syncing…";
-  }
-  try {
-    const r = await fetchJSON("/api/v1/calendar/sync-polygon", { method: "POST" });
-    if (out) {
-      out.className = "da-register-result ok";
-      out.textContent = `Upserted ${r.upserted} row(s). API items: ${r.fetched_from_api}. Skipped: ${r.skipped}.`;
-    }
-  } catch (e) {
-    if (out) {
-      out.className = "da-register-result bad";
-      out.textContent = "Error: " + e.message;
-    }
-  }
-});
-
 const formDa = $("#form-da-device");
 if (formDa) {
   formDa.addEventListener("submit", async (ev) => {
@@ -614,7 +761,7 @@ if (formSt) {
     ev.preventDefault();
     const out = $("#st-form-result");
     const name = String($("#st-name")?.value || "").trim();
-    const topic = String($("#st-topic")?.value || "");
+    const topic = String($("#st-topic")?.value || "").trim();
     let payload_json = {};
     const raw = String($("#st-payload")?.value || "").trim();
     if (raw) {
@@ -653,6 +800,8 @@ if (formSt) {
       ev.target.reset();
       const fq = $("#st-freq");
       if (fq) fq.value = "300";
+      const preset = $("#st-interval-preset");
+      if (preset) preset.value = "";
       const enb = $("#st-enabled");
       if (enb) enb.checked = true;
       await loadSchedulerTasks();
@@ -665,13 +814,210 @@ if (formSt) {
   });
 }
 
+const stPreset = $("#st-interval-preset");
+const stFreqInput = $("#st-freq");
+if (stPreset && stFreqInput) {
+  stPreset.addEventListener("change", () => {
+    const v = stPreset.value;
+    if (v) stFreqInput.value = v;
+  });
+  stFreqInput.addEventListener("input", () => {
+    const n = String(stFreqInput.value).trim();
+    const opt = Array.from(stPreset.options).find((o) => o.value === n);
+    stPreset.value = opt ? n : "";
+  });
+}
+
+function openExtensionManifestDialog(section) {
+  const dlg = $("#dialog-manifest");
+  const pre = $("#dialog-manifest-pre");
+  const title = $("#dialog-manifest-title");
+  if (!dlg || !pre) return;
+  if (title) {
+    title.textContent = "Extension manifest";
+  }
+  pre.textContent = "Loading…";
+  dlg.showModal();
+  const url = `/api/v1/extensions/manifest?section=${encodeURIComponent(section)}`;
+  fetchJSON(url)
+    .then((data) => {
+      const m = data && data.manifest;
+      if (title && m && m.extension_section) {
+        title.textContent = String(m.extension_section);
+      }
+      pre.textContent = JSON.stringify(m != null ? m : data, null, 2);
+    })
+    .catch((e) => {
+      pre.textContent = e.message || String(e);
+    });
+}
+
+const _IOC_EFFECTIVE_KEYS = new Set([
+  "effective_extension_yaml",
+  "effective_config_file",
+  "effective_redacted",
+  "effective_detail",
+  "effective_source",
+  "effective_error",
+]);
+
+/** IoC API merges docs + worker YAML; show resolved values first, schema docs second. */
+function formatIocDialogPayload(ioc) {
+  if (!ioc || typeof ioc !== "object") return ioc;
+  const effective = {
+    extension_yaml: ioc.effective_extension_yaml,
+    config_file: ioc.effective_config_file,
+    redacted: ioc.effective_redacted,
+    detail: ioc.effective_detail,
+    worker_admin_url: ioc.effective_source,
+    error: ioc.effective_error,
+  };
+  const documentation = {};
+  for (const k of Object.keys(ioc)) {
+    if (!_IOC_EFFECTIVE_KEYS.has(k)) documentation[k] = ioc[k];
+  }
+  return { effective, documentation };
+}
+
+function openExtensionIocDialog(section) {
+  const dlg = $("#dialog-ioc");
+  const pre = $("#dialog-ioc-pre");
+  const title = $("#dialog-ioc-title");
+  if (!dlg || !pre) return;
+  if (title) {
+    title.textContent = "Extension IoC (effective YAML)";
+  }
+  pre.textContent = "Loading…";
+  dlg.showModal();
+  const url = `/api/v1/extensions/ioc?section=${encodeURIComponent(section)}`;
+  fetchJSON(url)
+    .then((data) => {
+      const ioc = data && data.ioc;
+      if (title && ioc && ioc.extension_section) {
+        title.textContent = `IoC — ${String(ioc.extension_section)}`;
+      }
+      const payload = ioc != null ? formatIocDialogPayload(ioc) : data;
+      pre.textContent = JSON.stringify(payload, null, 2);
+    })
+    .catch((e) => {
+      pre.textContent = e.message || String(e);
+    });
+}
+
+$("#btn-manifest-close")?.addEventListener("click", () => {
+  $("#dialog-manifest")?.close();
+});
+
+$("#btn-ioc-close")?.addEventListener("click", () => {
+  $("#dialog-ioc")?.close();
+});
+
 $("#st-tasks-out")?.addEventListener("click", async (ev) => {
+  const manBtn = ev.target.closest("button[data-st-manifest]");
+  if (manBtn) {
+    const section = manBtn.getAttribute("data-st-manifest");
+    if (section) openExtensionManifestDialog(section);
+    return;
+  }
+
+  const iocBtn = ev.target.closest("button[data-st-ioc]");
+  if (iocBtn) {
+    const section = iocBtn.getAttribute("data-st-ioc");
+    if (section) openExtensionIocDialog(section);
+    return;
+  }
+
+  const provBtn = ev.target.closest("button[data-st-provision]");
+  if (provBtn) {
+    const id = provBtn.getAttribute("data-st-provision");
+    provBtn.disabled = true;
+    try {
+      const r = await fetch(`/api/v1/scheduler/tasks/${id}/provision`, { method: "POST" });
+      const raw = await r.text();
+      let data = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        data = {};
+      }
+      if (!r.ok) {
+        const msg =
+          formatApiErrorBody(data) ||
+          (raw && raw.length < 2000 ? raw : "") ||
+          "(empty response)";
+        alert(`Prepare DB failed (HTTP ${r.status})\n${msg}`);
+      } else {
+        alert(`Prepare DB\n\n${JSON.stringify(data, null, 2)}`);
+      }
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      provBtn.disabled = false;
+    }
+    return;
+  }
+
+  const copyCidBtn = ev.target.closest("button.st-copy-cid");
+  if (copyCidBtn && copyCidBtn.dataset.cid) {
+    ev.preventDefault();
+    const ok = await copyTextToClipboard(copyCidBtn.dataset.cid);
+    if (ok) {
+      copyCidBtn.classList.add("st-copy-cid--done");
+      setTimeout(() => copyCidBtn.classList.remove("st-copy-cid--done"), 1400);
+    } else {
+      alert("Could not copy to clipboard.");
+    }
+    return;
+  }
+
+  const testBtn = ev.target.closest("button[data-st-test]");
+  if (testBtn) {
+    const id = testBtn.getAttribute("data-st-test");
+    testBtn.disabled = true;
+    try {
+      const r = await fetch(`/api/v1/scheduler/tasks/${id}/test`, { method: "POST" });
+      const raw = await r.text();
+      let data = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        data = {};
+      }
+      if (!r.ok) {
+        const msg =
+          formatApiErrorBody(data) ||
+          (raw && raw.length < 2000 ? raw : "") ||
+          "(empty response)";
+        alert(`Test failed (HTTP ${r.status})\n${msg}`);
+      } else if (!data.ok) {
+        alert(`Connectivity failed\n\n${data.error || formatApiErrorBody(data) || JSON.stringify(data)}`);
+      } else {
+        alert(`Connectivity OK\n\n${data.detail || "Probe published."}`);
+      }
+      await loadSchedulerTasks();
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      testBtn.disabled = false;
+    }
+    return;
+  }
+
   const run = ev.target.closest("button[data-st-run]");
   if (run) {
     const id = run.getAttribute("data-st-run");
     run.disabled = true;
     try {
-      await fetchJSON(`/api/v1/scheduler/tasks/${id}/run`, { method: "POST" });
+      const r = await fetch(`/api/v1/scheduler/tasks/${id}/run`, { method: "POST" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        alert(`Run failed (HTTP ${r.status})\n${JSON.stringify(data)}`);
+      } else if (!data.ok) {
+        alert(`Run failed\n\n${data.error || JSON.stringify(data)}`);
+      } else {
+        const d = data.detail ? `\n\n${data.detail}` : "";
+        alert(`Run published to RabbitMQ.${d}\n\nUse the clipboard icon in the Run ID column to copy the correlation id for Loki/Grafana.`);
+      }
       await loadSchedulerTasks();
     } catch (e) {
       alert(e.message);
