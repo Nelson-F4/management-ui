@@ -2,7 +2,7 @@
 
 Static operator UI for Nelson4 (HTML, CSS, JavaScript). It is a **Python package** so `control-plane` can depend on it and mount assets at `/` and `/assets`.
 
-**Repository:** [github.com/sagizagagi/nelson4-management-ui](https://github.com/sagizagagi/nelson4-management-ui)
+**Repository:** [github.com/Nelson-F4/management-ui](https://github.com/Nelson-F4/management-ui) (same GitHub org as `control-plane`, `execution-runtime`, and the other Nelson packages).
 
 ## Install
 
@@ -18,7 +18,7 @@ Docker builds install `management-ui` before `control-plane` (see `docker/contro
 Install from Git without a local clone:
 
 ```bash
-pip install "management-ui @ git+https://github.com/sagizagagi/nelson4-management-ui.git"
+pip install "management-ui @ git+https://github.com/Nelson-F4/management-ui.git"
 ```
 
 ## Contents
