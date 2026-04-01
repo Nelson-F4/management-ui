@@ -357,7 +357,7 @@ function schedulerExtensionForTopic(topic, extensionByTopic) {
     return "engineering_lab.market_calendar";
   }
   if (key === "data.request") {
-    return "engineering_lab.data_acquisition.trade_station";
+    return "engineering_lab.equity_data_acquisition";
   }
   return "—";
 }
