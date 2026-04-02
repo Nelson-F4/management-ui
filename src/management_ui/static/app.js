@@ -1,5 +1,5 @@
 /** Bumped with index.html `?v=` and `<meta name="nelson4-management-ui-build">` — if this log mismatches DevTools Network, you are not serving this package build. */
-console.info("[Nelson4 operator UI] static build v=35");
+console.info("[operator UI] static build v=44");
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -70,7 +70,7 @@ function formatFrequencyHuman(sec) {
 
 const CHECK_LABELS = {
   postgres: "PostgreSQL",
-  rabbitmq: "RabbitMQ",
+  message_bus: "Message bus (AMQP)",
   scheduler: "Scheduler (market hours)",
   management_api: "Management API",
 };
@@ -115,7 +115,7 @@ function formatHealthTime(iso) {
 }
 
 /** Stable order; old APIs may omit `scheduler` — we inject a fallback row. */
-const HEALTH_CHECK_ORDER = ["postgres", "rabbitmq", "scheduler", "management_api"];
+const HEALTH_CHECK_ORDER = ["postgres", "message_bus", "scheduler", "management_api"];
 
 function renderCheckItems(checks) {
   const c = { ...(checks || {}) };
@@ -344,6 +344,14 @@ function escapeHtml(s) {
   const d = document.createElement("div");
   d.textContent = String(s);
   return d.innerHTML;
+}
+
+function escapeAttr(s) {
+  if (s == null) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;");
 }
 
 /** Extensions YAML section name activated by this bus topic (for the Tasks table). */
@@ -652,6 +660,16 @@ function applyGrafanaEmbedFromSettings(data) {
   }
 }
 
+function fillBusTopologyEditor(data) {
+  const ta = $("#bus-topology-json");
+  const st = $("#bus-topology-status");
+  if (!ta) return;
+  const row = data.settings.find((x) => x.key === "bus.topology");
+  const v = row && row.value != null ? row.value : {};
+  ta.value = JSON.stringify(v, null, 2);
+  if (st) st.textContent = "";
+}
+
 async function loadSettings() {
   const el = $("#settings-list");
   if (!el) return;
@@ -664,6 +682,7 @@ async function loadSettings() {
       )
       .join("");
     applyGrafanaEmbedFromSettings(data);
+    fillBusTopologyEditor(data);
   } catch (e) {
     if (el) el.textContent = "Error: " + e.message;
   }
@@ -687,6 +706,50 @@ if (btnReload) {
     }
   });
 }
+
+$("#btn-bus-topology-save")?.addEventListener("click", async () => {
+  const ta = $("#bus-topology-json");
+  const st = $("#bus-topology-status");
+  if (!ta) return;
+  let value;
+  try {
+    value = JSON.parse(ta.value);
+  } catch {
+    if (st) st.textContent = "Invalid JSON";
+    return;
+  }
+  try {
+    const r = await fetch("/api/v1/settings/bus.topology", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value, updated_by: "ui" }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    if (st) st.textContent = "Saved.";
+    await loadSettings();
+  } catch (e) {
+    if (st) st.textContent = String(e.message || e);
+  }
+});
+
+$("#btn-bus-topology-copy-env")?.addEventListener("click", async () => {
+  const ta = $("#bus-topology-json");
+  const st = $("#bus-topology-status");
+  if (!ta) return;
+  let line;
+  try {
+    line = JSON.stringify(JSON.parse(ta.value));
+  } catch {
+    if (st) st.textContent = "Fix JSON before copying";
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(line);
+    if (st) st.textContent = "Copied one-line JSON for NELSON_BUS_TOPOLOGY_JSON";
+  } catch {
+    if (st) st.textContent = "Copy failed — select JSON and copy manually";
+  }
+});
 
 const formSetting = $("#form-setting");
 if (formSetting) {
@@ -717,8 +780,180 @@ if (formSetting) {
   });
 }
 
+const RMQ_LS_Q = "rmq_monitor_queues";
+const RMQ_LS_X = "rmq_monitor_exchanges";
+let rmqLiveTimer = null;
+let mbusCatalogLoaded = false;
+
+function stopRmqLive() {
+  if (rmqLiveTimer) {
+    clearInterval(rmqLiveTimer);
+    rmqLiveTimer = null;
+  }
+}
+
+function rmqLoadCheckedFromStorage() {
+  try {
+    const q = JSON.parse(localStorage.getItem(RMQ_LS_Q) || "[]");
+    const x = JSON.parse(localStorage.getItem(RMQ_LS_X) || "[]");
+    return { queues: Array.isArray(q) ? q : [], exchanges: Array.isArray(x) ? x : [] };
+  } catch {
+    return { queues: [], exchanges: [] };
+  }
+}
+
+function rmqSaveChecked() {
+  const q = [...document.querySelectorAll('input[name="rmq-q"]:checked')].map((el) => el.value);
+  const x = [...document.querySelectorAll('input[name="rmq-x"]:checked')].map((el) => el.value);
+  localStorage.setItem(RMQ_LS_Q, JSON.stringify(q));
+  localStorage.setItem(RMQ_LS_X, JSON.stringify(x));
+}
+
+function fmtRate(v) {
+  if (v == null || Number.isNaN(Number(v))) return "—";
+  return Number(v).toFixed(3);
+}
+
+async function refreshMessageBusTraffic() {
+  const ovEl = $("#rmq-overview");
+  const tq = $("#rmq-queues-table");
+  const tx = $("#rmq-exchanges-table");
+  const st = $("#rmq-status");
+  const qChecked = [...document.querySelectorAll('input[name="rmq-q"]:checked')].map((el) => el.value);
+  const xChecked = [...document.querySelectorAll('input[name="rmq-x"]:checked')].map((el) => el.value);
+  try {
+    const qUrl =
+      qChecked.length > 0
+        ? `/api/v1/message-bus/queues?${new URLSearchParams({ names: qChecked.join(",") })}`
+        : "/api/v1/message-bus/queues";
+    const xUrl =
+      xChecked.length > 0
+        ? `/api/v1/message-bus/exchanges?${new URLSearchParams({ names: xChecked.join(",") })}`
+        : "/api/v1/message-bus/exchanges";
+    const [qRes, xRes, oRes] = await Promise.all([
+      fetchJSON(qUrl),
+      fetchJSON(xUrl),
+      fetchJSON("/api/v1/message-bus/overview"),
+    ]);
+    if (oRes.ok && oRes.overview && ovEl) {
+      const o = oRes.overview;
+      ovEl.innerHTML = `Cluster <strong>${escapeHtml(o.cluster_name || "—")}</strong> · publish <code>${fmtRate(o.publish_rate_per_sec)}</code>/s · deliver_get <code>${fmtRate(o.deliver_get_rate_per_sec)}</code>/s · <span class="muted">API</span> <code>${escapeHtml(oRes.management_url || "")}</code>`;
+    } else if (ovEl) {
+      ovEl.textContent = oRes.error ? `Overview: ${oRes.error}` : "";
+    }
+    if (!qRes.ok) {
+      if (tq) tq.innerHTML = `<p class="muted">${escapeHtml(qRes.error || "")}</p>`;
+    } else if (tq) {
+      const rows = (qRes.queues || [])
+        .map(
+          (r) =>
+            `<tr><td>${escapeHtml(r.name)}</td><td>${r.messages_ready ?? "—"}</td><td>${r.messages_unacknowledged ?? "—"}</td><td>${r.messages ?? "—"}</td><td>${r.consumers ?? "—"}</td><td>${fmtRate(r.publish_rate_per_sec)}</td><td>${fmtRate(r.deliver_get_rate_per_sec)}</td></tr>`
+        )
+        .join("");
+      tq.innerHTML = `<table><thead><tr><th>Name</th><th>Ready</th><th>Unacked</th><th>Total</th><th>Consumers</th><th>Publish/s</th><th>Deliver/s</th></tr></thead><tbody>${rows || "<tr><td colspan='7'>No data</td></tr>"}</tbody></table>`;
+    }
+    if (!xRes.ok) {
+      if (tx) tx.innerHTML = `<p class="muted">${escapeHtml(xRes.error || "")}</p>`;
+    } else if (tx) {
+      const rows = (xRes.exchanges || [])
+        .map(
+          (r) =>
+            `<tr><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.exchange_type || "—")}</td><td>${fmtRate(r.publish_rate_per_sec)}</td><td>${fmtRate(r.deliver_get_rate_per_sec)}</td></tr>`
+        )
+        .join("");
+      tx.innerHTML = `<table><thead><tr><th>Name</th><th>Type</th><th>Publish/s</th><th>Deliver/s</th></tr></thead><tbody>${rows || "<tr><td colspan='4'>No data</td></tr>"}</tbody></table>`;
+    }
+    if (st) {
+      const hint =
+        qChecked.length === 0 || xChecked.length === 0
+          ? " (empty selection lists all queues / all exchanges)"
+          : "";
+      st.textContent = hint ? `Updated.${hint}` : "Updated.";
+    }
+  } catch (e) {
+    if (st) st.textContent = e.message || String(e);
+  }
+}
+
+async function loadMessageBusTrafficCatalog() {
+  const qel = $("#rmq-queue-cbs");
+  const xel = $("#rmq-exchange-cbs");
+  const st = $("#rmq-status");
+  try {
+    const [settingsData, qRes, xRes] = await Promise.all([
+      fetchJSON("/api/v1/settings"),
+      fetchJSON("/api/v1/message-bus/queues"),
+      fetchJSON("/api/v1/message-bus/exchanges"),
+    ]);
+    if (!qRes.ok) {
+      if (st) st.textContent = qRes.error || "Queues API failed";
+      if (qel) qel.textContent = qRes.error || "—";
+      if (xel) xel.textContent = xRes.ok ? "…" : xRes.error || "—";
+      return;
+    }
+    const topo = (settingsData.settings.find((s) => s.key === "bus.topology") || {}).value || {};
+    const tq = topo.queues && typeof topo.queues === "object" ? Object.values(topo.queues) : [];
+    const tex = typeof topo.exchange === "string" && topo.exchange.trim() ? [topo.exchange.trim()] : [];
+
+    const saved = rmqLoadCheckedFromStorage();
+    const defaultQ = new Set([...tq.map(String), ...saved.queues.map(String)]);
+    const defaultX = new Set([...tex.map(String), ...saved.exchanges.map(String)]);
+
+    const qNames = (qRes.queues || []).map((r) => r.name).filter(Boolean).sort();
+    if (qel) {
+      qel.innerHTML = qNames
+        .map(
+          (n) =>
+            `<label><input type="checkbox" name="rmq-q" value="${escapeAttr(n)}" ${defaultQ.has(n) ? "checked" : ""} /> ${escapeHtml(n)}</label>`
+        )
+        .join("");
+      qel.classList.remove("muted");
+    }
+    if (xel) {
+      if (xRes.ok) {
+        const xNames = (xRes.exchanges || []).map((r) => r.name).filter(Boolean).sort();
+        xel.innerHTML = xNames
+          .map(
+            (n) =>
+              `<label><input type="checkbox" name="rmq-x" value="${escapeAttr(n)}" ${defaultX.has(n) ? "checked" : ""} /> ${escapeHtml(n)}</label>`
+          )
+          .join("");
+        xel.classList.remove("muted");
+      } else {
+        xel.textContent = xRes.error || "—";
+      }
+    }
+    if (st) st.textContent = "";
+    document.querySelectorAll('input[name="rmq-q"], input[name="rmq-x"]').forEach((el) => {
+      el.addEventListener("change", () => {
+        rmqSaveChecked();
+        refreshMessageBusTraffic();
+      });
+    });
+    await refreshMessageBusTraffic();
+  } catch (e) {
+    if (st) st.textContent = e.message || String(e);
+    if (qel) qel.textContent = "Error";
+  }
+}
+
+$("#btn-rmq-refresh")?.addEventListener("click", () => refreshMessageBusTraffic());
+
+$("#rmq-live")?.addEventListener("change", (ev) => {
+  stopRmqLive();
+  if (ev.target.checked) {
+    rmqLiveTimer = setInterval(() => refreshMessageBusTraffic(), 2000);
+  }
+});
+
 document.querySelectorAll(".tab").forEach((btn) => {
   btn.addEventListener("click", () => {
+    const previousActive = document.querySelector(".tab.active");
+    if (previousActive && previousActive.dataset.tab === "rmq-traffic" && btn !== previousActive) {
+      stopRmqLive();
+      const live = $("#rmq-live");
+      if (live) live.checked = false;
+    }
     document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
     document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
     btn.classList.add("active");
@@ -730,6 +965,14 @@ document.querySelectorAll(".tab").forEach((btn) => {
       loadDaDevices();
     }
     if (btn.dataset.tab === "scheduler-tasks") loadSchedulerTasks();
+    if (btn.dataset.tab === "rmq-traffic") {
+      if (!mbusCatalogLoaded) {
+        mbusCatalogLoaded = true;
+        loadMessageBusTrafficCatalog();
+      } else {
+        refreshMessageBusTraffic();
+      }
+    }
   });
 });
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "management-ui"
 version = "0.1.0"
-description = "Operator management UI static assets (Nelson4); consumed by control-plane"
+description = "Operator management UI static assets; consumed by control-plane"
 requires-python = ">=3.11"
 dependencies = []
 
