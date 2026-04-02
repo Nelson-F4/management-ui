@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Nelson4 operator UI (assets: management-ui package). Bump ?v= on styles.css and app.js together. ASSET_CACHE_BUST: v=41 -->
+<!-- Nelson4 operator UI (assets: management-ui package). Bump ?v= on styles.css and app.js together. ASSET_CACHE_BUST: v=42 -->
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -20,7 +20,7 @@
     .st-interval-row input[type="number"]{min-width:9rem;padding:.45rem .55rem;border-radius:6px;border:1px solid #2f3336;background:#000;color:#e7e9ea;font-size:.85rem}
     .st-scheduler-notes ul.st-notes-list{margin:.35rem 0 .75rem 1.1rem;padding:0;font-size:.78rem;line-height:1.45;max-width:52rem}
   </style>
-  <link rel="stylesheet" href="/assets/styles.css?v=29" />
+  <link rel="stylesheet" href="/assets/styles.css?v=30" />
 </head>
 <body>
   <header class="top">
@@ -132,7 +132,16 @@
     </section>
 
     <section id="panel-grafana" class="panel">
-      <p class="muted">Embed URL from <code>ui.public_grafana_url</code> (browser must reach host).</p>
+      <h2>Metrics &amp; logs</h2>
+      <p class="muted">
+        Embeds <strong>Grafana</strong> using the setting <code>ui.public_grafana_url</code> (same host your <em>browser</em> can open — often <code>http://localhost:3000</code>).
+        Set it on the <strong>Settings</strong> tab as JSON <code>{"value":"http://host:3000"}</code>, or set <code>PUBLIC_GRAFANA_URL</code> on control-plane and restart.
+        If the frame stays blank, Grafana may block iframes; use <strong>Open Grafana</strong> below or enable embedding in Grafana.
+      </p>
+      <p id="grafana-embed-status" class="muted grafana-embed-status" aria-live="polite"></p>
+      <p class="grafana-embed-bar">
+        <a id="grafana-open-external" class="btn-grafana-open" href="#" target="_blank" rel="noopener noreferrer" hidden>Open Grafana in new tab</a>
+      </p>
       <iframe id="grafana-frame" title="Grafana" sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
     </section>
   </main>
@@ -157,6 +166,6 @@
     </div>
   </dialog>
 
-  <script src="/assets/app.js?v=41" defer></script>
+  <script src="/assets/app.js?v=42" defer></script>
 </body>
 </html>

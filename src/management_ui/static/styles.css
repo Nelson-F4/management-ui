@@ -540,6 +540,30 @@ th, td {
   font-weight: 600;
 }
 
+.grafana-embed-status.warn {
+  color: var(--warn);
+}
+
+.grafana-embed-bar {
+  margin: 0.35rem 0 0.65rem;
+}
+
+a.btn-grafana-open {
+  display: inline-block;
+  background: var(--card);
+  color: var(--accent);
+  border: 1px solid #2f3336;
+  padding: 0.4rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+a.btn-grafana-open:hover {
+  border-color: var(--accent);
+}
+
 #grafana-frame {
   width: 100%;
   min-height: 70vh;

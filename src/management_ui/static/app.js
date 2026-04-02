@@ -610,6 +610,48 @@ async function loadSchedulerTasks() {
   }
 }
 
+/** Public Grafana URL from a /api/v1/settings row (`value` is usually `{ value: "http://..." }`). */
+function grafanaEmbedUrlFromRow(row) {
+  if (!row || row.value == null) return "";
+  const v = row.value;
+  if (typeof v === "string") return v;
+  if (typeof v === "object") {
+    if (typeof v.value === "string") return v.value;
+    if (typeof v.url === "string") return v.url;
+  }
+  return "";
+}
+
+function applyGrafanaEmbedFromSettings(data) {
+  const g = data.settings.find((x) => x.key === "ui.public_grafana_url");
+  const url = grafanaEmbedUrlFromRow(g);
+  const frame = $("#grafana-frame");
+  const statusEl = $("#grafana-embed-status");
+  const openEl = $("#grafana-open-external");
+  if (statusEl) {
+    if (url) {
+      statusEl.textContent = "Embedding: " + url;
+      statusEl.classList.remove("warn");
+    } else {
+      statusEl.textContent =
+        "No URL loaded. Add ui.public_grafana_url on the Settings tab (JSON {\"value\":\"http://localhost:3000\"}) or set PUBLIC_GRAFANA_URL on control-plane and restart.";
+      statusEl.classList.add("warn");
+    }
+  }
+  if (openEl) {
+    if (url) {
+      openEl.href = url;
+      openEl.hidden = false;
+    } else {
+      openEl.hidden = true;
+      openEl.removeAttribute("href");
+    }
+  }
+  if (frame) {
+    frame.src = url || "about:blank";
+  }
+}
+
 async function loadSettings() {
   const el = $("#settings-list");
   if (!el) return;
@@ -621,11 +663,7 @@ async function loadSettings() {
           `<div class="setting-row"><strong>${escapeHtml(s.key)}</strong> ${statusBadge(true)}<br/><code>${escapeHtml(JSON.stringify(s.value))}</code><br/><small class="muted">updated: ${s.updated_at || "—"} by ${escapeHtml(s.updated_by || "—")}</small></div>`
       )
       .join("");
-    const g = data.settings.find((x) => x.key === "ui.public_grafana_url");
-    if (g && g.value && g.value.value) {
-      const frame = $("#grafana-frame");
-      if (frame) frame.src = g.value.value;
-    }
+    applyGrafanaEmbedFromSettings(data);
   } catch (e) {
     if (el) el.textContent = "Error: " + e.message;
   }
