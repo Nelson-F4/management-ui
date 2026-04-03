@@ -1,5 +1,7 @@
 /** Bumped with index.html `?v=` and `<meta name="nelson4-management-ui-build">` — if this log mismatches DevTools Network, you are not serving this package build. */
-console.info("[operator UI] static build v=44");
+console.info("[operator UI] static build v=70");
+/** Scheduler rows no longer use this; kept so any cached bundle that still interpolates `${prepareDbBtn}` does not throw. */
+var prepareDbBtn = "";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -69,8 +71,8 @@ function formatFrequencyHuman(sec) {
 }
 
 const CHECK_LABELS = {
-  postgres: "PostgreSQL",
-  message_bus: "Message bus (AMQP)",
+  postgres: "PostgreSQL (database connectivity)",
+  message_bus: "RabbitMQ (AMQP connectivity)",
   scheduler: "Scheduler (market hours)",
   management_api: "Management API",
 };
@@ -180,11 +182,28 @@ function statusBadge(ok) {
     : '<span class="badge bad">fail</span>';
 }
 
+function applyOperatorVersionFromHealth(data) {
+  const span = $("#operator-version");
+  if (!span) return;
+  const op = data && data.operator;
+  if (!op || typeof op !== "object") {
+    span.textContent = "";
+    return;
+  }
+  const cp = op.control_plane != null && String(op.control_plane).trim() !== "" ? String(op.control_plane).trim() : null;
+  const ui = op.management_ui != null && String(op.management_ui).trim() !== "" ? String(op.management_ui).trim() : null;
+  const parts = [];
+  if (cp) parts.push(`control-plane ${cp}`);
+  if (ui) parts.push(`management-ui ${ui}`);
+  span.textContent = parts.length ? `(${parts.join(" · ")})` : "";
+}
+
 async function loadHealth() {
   const el = $("#health-panel");
   if (!el) return;
   try {
     const data = await fetchJSON("/api/v1/health/detailed");
+    applyOperatorVersionFromHealth(data);
     renderHealth(data);
   } catch (e) {
     const msg =
@@ -233,13 +252,50 @@ function renderSchedulerRow(c, sched) {
 }
 
 function renderRegistryRow(c) {
-  return `<li class="component-row ${c.enabled ? "enabled" : "disabled"}">
-    <span class="component-led" aria-hidden="true"></span>
-    <div class="component-body">
-      <div class="component-id">${escapeHtml(c.component_id)}</div>
-      <div class="component-meta">
-        <span class="component-phase">${escapeHtml(c.phase)}</span>
-        <span class="component-flag">${c.enabled ? "Enabled" : "Disabled"}</span>
+  const enabled = !!c.enabled;
+  const stateClass = enabled ? "up" : "registry-component--disabled";
+  const pill = enabled
+    ? '<span class="health-status-pill ok">Enabled</span>'
+    : '<span class="health-status-pill bad">Disabled</span>';
+  const phase = String(c.phase || "").replace(/_/g, " ");
+  const impl = String(c.implementation_label || "").trim();
+  const pkg = String(c.implementation_package || "").trim();
+  const pkgTitle = pkg ? escapeAttr(pkg) : "";
+  const extId = String(c.extension_id || "").trim();
+  const extVer = String(c.extension_version || "").trim();
+  const titleBits = [String(c.component_id || "").trim()];
+  if (extId) titleBits.push(`IoC: ${extId}`);
+  if (pkg) titleBits.push(pkg);
+  const title = escapeAttr(titleBits.filter(Boolean).join(" · "));
+  const verAfterImpl = extVer
+    ? ` <span class="muted registry-component-version" title="TradeStation extension package version">(${escapeHtml(
+        extVer
+      )})</span>`
+    : "";
+  let extra = "";
+  if (impl) {
+    extra = `<span class="registry-impl-wrap" ${pkgTitle ? `title="${pkgTitle}"` : ""}><strong class="registry-impl">${escapeHtml(
+      impl
+    )}</strong>${verAfterImpl}`;
+    if (phase) {
+      extra += `<span class="muted registry-phase"> · ${escapeHtml(phase)}</span>`;
+    }
+    extra += "</span>";
+  } else if (phase) {
+    extra = `<span class="muted registry-phase">${escapeHtml(phase)}</span>`;
+    if (extVer) {
+      extra += verAfterImpl;
+    }
+  } else if (extVer) {
+    extra = `<span class="registry-impl-wrap">${verAfterImpl.trimStart()}</span>`;
+  }
+  return `<li class="health-check-row registry-component ${stateClass}" title="${title}">
+    <span class="health-led" aria-hidden="true"></span>
+    <div class="health-check-body">
+      <div class="health-check-line">
+        <span class="health-check-name">${escapeHtml(c.component_id)}</span>
+        <span class="health-check-pill-wrap">${pill}</span>
+        <span class="health-check-extra">${extra}</span>
       </div>
     </div>
   </li>`;
@@ -260,17 +316,9 @@ function isSchedulerComponent(c) {
   return id === "management-scheduler" || id === "scheduler";
 }
 
-/** Normalized so scheduler row always gets command UI (dropdown + Execute). */
-function renderComponentRow(c, sched) {
-  if (isSchedulerComponent(c)) {
-    const merged = { ...BUILTIN_SCHEDULER, ...c, component_id: BUILTIN_SCHEDULER.component_id };
-    return renderSchedulerRow(merged, sched);
-  }
-  return renderRegistryRow(c);
-}
-
-async function loadComponents() {
-  const el = $("#components-out");
+/** Scheduler command dropdown + Execute (Scheduler tab). */
+async function loadSchedulerManagement() {
+  const el = $("#scheduler-management-out");
   if (!el) return;
   let sched = null;
   try {
@@ -278,37 +326,41 @@ async function loadComponents() {
   } catch (e) {
     sched = null;
   }
+  const row = renderSchedulerRow(BUILTIN_SCHEDULER, sched);
+  el.innerHTML = `<ul class="component-list" role="list">${row}</ul>`;
+}
+
+async function loadComponents() {
+  const el = $("#components-out");
+  if (!el) return;
   const setListHtml = (list, data) => {
-    if (list.length === 0) {
+    const filtered = list.filter((c) => c && !isSchedulerComponent(c));
+    if (filtered.length === 0) {
       el.innerHTML =
-        '<p class="muted">No components. Add extensions later or use the built-in scheduler above.</p>';
+        '<p class="muted">No components in the stub list yet. Extension registry integration is pending.</p>';
       return;
     }
-    const rows = list.map((c) => renderComponentRow(c, sched)).join("");
+    const rows = filtered.map((c) => renderRegistryRow(c)).join("");
     const banner =
       data && data.registry_error
         ? `<p class="component-api-banner" role="status">Registry list partial: ${escapeHtml(
             String(data.registry_error)
           )}</p>`
         : "";
-    el.innerHTML = `${banner}<ul class="component-list" role="list">${rows}</ul>`;
+    el.innerHTML = `${banner}<ul class="health-check-list registry-component-list" role="list">${rows}</ul>`;
   };
   try {
     const data = await fetchJSON("/api/v1/components");
-    let list = Array.isArray(data.components) ? [...data.components] : [];
-    if (!list.some(isSchedulerComponent)) {
-      list.unshift(BUILTIN_SCHEDULER);
-    }
+    const list = Array.isArray(data.components) ? [...data.components] : [];
     setListHtml(list, data);
   } catch (e) {
     const msg =
       e.name === "AbortError"
         ? "Request timed out (20s). Is the API reachable?"
         : e.message || String(e);
-    const row = renderSchedulerRow(BUILTIN_SCHEDULER, sched);
     el.innerHTML = `<p class="component-api-banner warn">Could not load <code>/api/v1/components</code>: ${escapeHtml(
       msg
-    )}. Built-in scheduler controls are shown below.</p><ul class="component-list" role="list">${row}</ul>`;
+    )}</p>`;
   }
 }
 
@@ -367,6 +419,9 @@ function schedulerExtensionForTopic(topic, extensionByTopic) {
   if (key === "data.request") {
     return "engineering_lab.equity_data_acquisition";
   }
+  if (key === "data.livefeed.request") {
+    return "engineering_lab.livefeed_equity_quotes";
+  }
   return "—";
 }
 
@@ -390,19 +445,21 @@ function renderSchedulerOutcomeCell(prefix, t) {
     !ok && err
       ? `<div class="st-err-line" title="${tip}">${escapeHtml(String(err))}</div>`
       : "";
-  return `<span class="${pillClass}" title="${tip}">${label}</span><br/><small class="muted">${when}</small>${errLine}`;
+  const line = `<span class="st-outcome-inline"><span class="${pillClass}" title="${tip}">${label}</span><small class="muted st-outcome-time">${when}</small></span>`;
+  return errLine ? `<div class="st-outcome-cell">${line}${errLine}</div>` : line;
 }
 
 const SVG_CLIPBOARD_ICON = `<svg class="st-copy-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
 
-/** Copy button for last Run now correlation id (Grafana/Loki). */
+/** Copy last Run now correlation id (icon only; full id in tooltip and clipboard). */
 function schedulerCopyCorrelationCell(t) {
   const cid = t.last_run_correlation_id;
   if (!cid) {
-    return `<button type="button" class="st-copy-cid st-copy-cid--empty" disabled title="Run now to generate a correlation id" aria-label="No correlation id yet">${SVG_CLIPBOARD_ICON}</button>`;
+    return `<span class="st-run-id-row st-run-id-row--empty st-run-id-row--icon-only"><button type="button" class="st-copy-cid st-copy-cid--empty" disabled title="Run now to generate a correlation id" aria-label="No correlation id yet">${SVG_CLIPBOARD_ICON}</button></span>`;
   }
-  const safe = escapeHtml(String(cid));
-  return `<button type="button" class="st-copy-cid" data-cid="${safe}" title="Copy correlation id (last Run now)" aria-label="Copy correlation id">${SVG_CLIPBOARD_ICON}</button>`;
+  const raw = String(cid);
+  const attr = escapeAttr(raw);
+  return `<span class="st-run-id-row st-run-id-row--icon-only"><button type="button" class="st-copy-cid" data-cid="${attr}" title="Copy correlation id (last Run now): ${attr}" aria-label="Copy correlation id">${SVG_CLIPBOARD_ICON}</button></span>`;
 }
 
 async function copyTextToClipboard(text) {
@@ -508,12 +565,27 @@ async function loadDaDevices() {
       el.innerHTML = '<p class="muted">No devices registered yet.</p>';
       return;
     }
-    const head = `<thead><tr><th>Component ID</th><th>Extension</th><th>Enabled</th><th>Registered</th><th>Last test</th><th>Actions</th></tr></thead>`;
+    const head = `<thead><tr><th>Component ID</th><th>Extension</th><th>Topic</th><th>On</th><th>Registered</th><th>Last test</th><th>Actions</th></tr></thead>`;
     const body = list
       .map((d) => {
         const cid = escapeHtml(d.component_id);
         const rawCid = d.component_id;
-        const toggleLabel = d.enabled ? "Disable" : "Enable";
+        const extRaw =
+          d.extension_section != null && String(d.extension_section).trim() !== ""
+            ? String(d.extension_section).trim()
+            : d.extension_id != null && String(d.extension_id).trim() !== ""
+              ? String(d.extension_id).trim()
+              : null;
+        const extCell =
+          extRaw == null
+            ? "—"
+            : `<code class="st-ext-cell" title="extensions.${escapeHtml(extRaw)} in execution-runtime YAML">${escapeHtml(
+                extRaw
+              )}</code>`;
+        const topicCell =
+          d.topic != null && String(d.topic).trim() !== ""
+            ? `<code>${escapeHtml(String(d.topic).trim())}</code>`
+            : "—";
         const lt = d.last_da_test || {};
         let lastTestHtml = '<span class="muted">—</span>';
         if (lt.at) {
@@ -526,13 +598,21 @@ async function loadDaDevices() {
           const when = escapeHtml(String(lt.at).slice(0, 19)) + "Z";
           lastTestHtml = `<span class="${pillClass}" title="${tip}">${label}</span><br/><small class="muted">${when}</small>`;
         }
-        return `<tr><td><code>${cid}</code></td><td>${escapeHtml(
-          d.extension_id || "—"
-        )}</td><td>${d.enabled ? "Yes" : "No"}</td><td>${escapeHtml(
+        const testTitle =
+          extRaw != null
+            ? `GET /v1/extensions/test?section=${extRaw} on execution-runtime (scoped extension probe).`
+            : "Extension connectivity test";
+        const configBtn =
+          extRaw != null
+            ? `<button type="button" class="btn-st-config" data-da-config="${escapeAttr(extRaw)}" data-da-cid="${escapeAttr(String(rawCid))}" title="Effective YAML, documentation, manifest, Prepare DB (no scheduler task)">Configuration</button>`
+            : "";
+        return `<tr><td><code>${cid}</code></td><td>${extCell}</td><td>${topicCell}</td><td>${
+          d.enabled ? "Yes" : "No"
+        }</td><td>${escapeHtml(
           d.registered_at ? String(d.registered_at).slice(0, 19) + "Z" : "—"
-        )}</td><td class="da-last-test">${lastTestHtml}</td><td class="da-actions"><button type="button" class="btn-da-test" data-cid="${escapeHtml(
-          rawCid
-        )}" title="Same Polygon request as the worker (v2 aggs + DA_POLYGON_LIVE_TIMESPAN)">Test</button> <button type="button" class="btn-da-toggle" data-cid="${cid}">${toggleLabel}</button></td></tr>`;
+        )}</td><td class="da-last-test">${lastTestHtml}</td><td class="st-task-actions"><button type="button" class="btn-da-test" data-cid="${escapeAttr(
+          String(rawCid)
+        )}" title="${escapeAttr(testTitle)}">Test</button>${configBtn}</td></tr>`;
       })
       .join("");
     el.innerHTML = `<table class="da-device-table">${head}<tbody>${body}</tbody></table>`;
@@ -577,35 +657,32 @@ async function loadSchedulerTasks() {
           ext !== "—"
             ? `Checks RabbitMQ publish, then GET /v1/extensions/test?section=${ext} on execution-runtime (this extension only).`
             : "Publishes a connectivity probe to the broker (topic routing key).";
-        const manifestBtn =
+        const configBtn =
           ext !== "—"
-            ? `<button type="button" class="btn-st-manifest" data-st-manifest="${escapeHtml(ext)}" title="YAML section requirements, persistency, entity refs (from engineering-lab manifest)">Manifest</button>`
-            : "";
-        const iocBtn =
-          ext !== "—"
-            ? `<button type="button" class="btn-st-ioc" data-st-ioc="${escapeHtml(ext)}" title="Resolved extensions.* YAML from the worker (effective first); operator schema docs below">IoC</button>`
-            : "";
-        const prepareDbBtn =
-          ext !== "—"
-            ? `<button type="button" class="btn-st-provision" data-st-provision="${t.id}" title="Schema only: POST execution-runtime /v1/extensions/provision (DDL). When persistency.ensure_tables_on_sync is true, the worker also creates tables on startup / first sync — use this if that flag is false or you need DDL before the worker runs.">Prepare DB</button>`
+            ? `<button type="button" class="btn-st-config" data-st-config="${escapeHtml(ext)}" data-st-config-task="${t.id}" title="Effective YAML, IoC documentation, manifest, and Prepare DB">Configuration</button>`
             : "";
         const copyCell = schedulerCopyCorrelationCell(t);
+        const freqSec = Number(t.frequency_seconds);
+        const freqVal = Number.isFinite(freqSec) && freqSec >= 1 ? Math.floor(freqSec) : 300;
+        // TODO(scheduler): Interval editor — mirror Add task UX (`#st-interval-preset` + `#st-freq`): preset dropdown + seconds field, then PATCH `frequency_seconds` (reuse `data-st-save-freq` / handler below).
         return `<tr>
           <td>${t.id}</td>
           <td>${escapeHtml(t.name)}</td>
           <td>${extCell}</td>
           <td><code>${escapeHtml(t.topic)}</code><br/><small class="muted">${payload}</small></td>
-          <td title="${escapeHtml(String(t.frequency_seconds))} s">${escapeHtml(formatFrequencyHuman(t.frequency_seconds))}</td>
+          <td class="st-interval-cell" title="Seconds between automatic runs (control-plane tick)">
+            <input type="number" min="1" max="2592000" step="1" class="st-freq-input" data-st-freq="${t.id}" value="${freqVal}" aria-label="Interval seconds" style="width:6.5rem" />
+            <button type="button" class="scheduler-exec st-freq-apply" data-st-save-freq="${t.id}">Apply</button>
+            <div class="muted st-freq-hint" style="font-size:0.75rem;margin-top:0.2rem">${escapeHtml(formatFrequencyHuman(freqVal))}</div>
+          </td>
           <td>${t.enabled ? "Yes" : "No"}</td>
           <td class="st-last-cell">${lastRun}</td>
           <td class="st-last-cell">${lastConn}</td>
           <td class="st-copy-cell">${copyCell}</td>
           <td class="st-task-actions">
             <button type="button" class="btn-da-test" data-st-test="${t.id}" title="${escapeHtml(testTitle)}">Test</button>
-            ${manifestBtn}
-            ${iocBtn}
-            ${prepareDbBtn}
             <button type="button" data-st-run="${t.id}">Run now</button>
+            ${configBtn}
             <button type="button" data-st-toggle="${t.id}" data-st-next="${t.enabled ? "0" : "1"}">${t.enabled ? "Disable" : "Enable"}</button>
             <button type="button" class="st-danger" data-st-del="${t.id}">Delete</button>
           </td>
@@ -660,6 +737,36 @@ function applyGrafanaEmbedFromSettings(data) {
   }
 }
 
+function applyRabbitMqEmbedFromSettings(data) {
+  const row = data.settings.find((x) => x.key === "ui.public_rabbitmq_management_url");
+  const url = grafanaEmbedUrlFromRow(row);
+  const frame = $("#rabbitmq-frame");
+  const statusEl = $("#rabbitmq-embed-status");
+  const openEl = $("#rabbitmq-open-external");
+  if (statusEl) {
+    if (url) {
+      statusEl.textContent = "Embedding: " + url;
+      statusEl.classList.remove("warn");
+    } else {
+      statusEl.textContent =
+        "No URL loaded. Add ui.public_rabbitmq_management_url on the Settings tab (JSON {\"value\":\"http://localhost:15672\"}) or set PUBLIC_RABBITMQ_MANAGEMENT_URL on control-plane and restart.";
+      statusEl.classList.add("warn");
+    }
+  }
+  if (openEl) {
+    if (url) {
+      openEl.href = url;
+      openEl.hidden = false;
+    } else {
+      openEl.hidden = true;
+      openEl.removeAttribute("href");
+    }
+  }
+  if (frame) {
+    frame.src = url || "about:blank";
+  }
+}
+
 function fillBusTopologyEditor(data) {
   const ta = $("#bus-topology-json");
   const st = $("#bus-topology-status");
@@ -682,6 +789,7 @@ async function loadSettings() {
       )
       .join("");
     applyGrafanaEmbedFromSettings(data);
+    applyRabbitMqEmbedFromSettings(data);
     fillBusTopologyEditor(data);
   } catch (e) {
     if (el) el.textContent = "Error: " + e.message;
@@ -691,6 +799,7 @@ async function loadSettings() {
 // Load dashboard data first so a bug in button handlers cannot leave health on "Loading…"
 loadHealth();
 loadComponents();
+loadSchedulerManagement();
 loadSettings();
 setInterval(loadHealth, 10000);
 
@@ -706,6 +815,51 @@ if (btnReload) {
     }
   });
 }
+
+$("#btn-settings-export-yaml")?.addEventListener("click", async () => {
+  const st = $("#settings-yaml-status");
+  try {
+    const r = await fetch("/api/v1/settings/export.yaml");
+    if (!r.ok) throw new Error(await r.text());
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "nelson-control-plane-settings.yaml";
+    a.click();
+    URL.revokeObjectURL(url);
+    if (st) st.textContent = "Downloaded nelson-control-plane-settings.yaml";
+  } catch (e) {
+    if (st) st.textContent = "Export failed: " + (e.message || e);
+  }
+});
+
+$("#btn-settings-import-yaml")?.addEventListener("click", () => {
+  $("#input-settings-import-yaml")?.click();
+});
+
+$("#input-settings-import-yaml")?.addEventListener("change", async (ev) => {
+  const st = $("#settings-yaml-status");
+  const input = ev.target;
+  const file = input.files && input.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const r = await fetch("/api/v1/settings/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ yaml: text, updated_by: "ui-import" }),
+    });
+    const data = r.ok ? await r.json() : {};
+    if (!r.ok) throw new Error(formatApiErrorBody(data) || (await r.text()));
+    if (st) st.textContent = `Imported ${data.imported} key(s).`;
+    await loadSettings();
+  } catch (e) {
+    if (st) st.textContent = "Import failed: " + (e.message || e);
+  } finally {
+    input.value = "";
+  }
+});
 
 $("#btn-bus-topology-save")?.addEventListener("click", async () => {
   const ta = $("#bus-topology-json");
@@ -780,33 +934,441 @@ if (formSetting) {
   });
 }
 
-const RMQ_LS_Q = "rmq_monitor_queues";
-const RMQ_LS_X = "rmq_monitor_exchanges";
-let rmqLiveTimer = null;
+const RMQ_TAP_MAX_MESSAGES = 200;
+const RMQ_TAP_STATES_LS = "rmq_tap_states_v1";
+const RMQ_TAP_ACTIVE_LS = "rmq_tap_active_id_v1";
+// tap_id -> { tapId, bufferMsgs, ws, routing_key, exchange, exchange_type, queue_name }
+let rmqTapsById = new Map();
+let rmqActiveTapId = null;
 let mbusCatalogLoaded = false;
 
-function stopRmqLive() {
-  if (rmqLiveTimer) {
-    clearInterval(rmqLiveTimer);
-    rmqLiveTimer = null;
+function stopRmqTapWs(tapId) {
+  const st = rmqTapsById.get(tapId);
+  if (!st) return;
+  if (st.ws) {
+    try {
+      st.ws.close();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  st.ws = null;
+}
+
+function stopAllRmqTapWs() {
+  for (const tapId of rmqTapsById.keys()) {
+    stopRmqTapWs(tapId);
   }
 }
 
-function rmqLoadCheckedFromStorage() {
+function tapWsUrl(tapId) {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${location.host}/api/v1/message-bus/tap/${encodeURIComponent(
+    tapId
+  )}/ws`;
+}
+
+/** Normalize tap buffer entry: `{ receivedAt, body }` or legacy raw `body`. */
+function rmqTapNormalizeEntry(entry) {
+  if (entry && typeof entry === "object" && "body" in entry) {
+    return { receivedAt: entry.receivedAt || null, body: entry.body };
+  }
+  return { receivedAt: null, body: entry };
+}
+
+function rmqTapPayloadDataOnly(body) {
+  if (body && typeof body === "object" && body !== null && "payload" in body) {
+    return body.payload;
+  }
+  return body;
+}
+
+/** Topics always offered in the tap dropdown (scheduler + livefeed); merged with broker bindings. */
+const RMQ_TAP_SYSTEM_TOPICS = [
+  "data.request",
+  "data.calendar.request",
+  "model.trigger",
+  "data.livefeed.equity_quote",
+];
+
+/** SVG: code / full JSON (Lucide-style). */
+const RMQ_TAP_ICON_JSON = `<svg class="rmq-tap-act-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`;
+
+/** SVG: clipboard (copy data). */
+const RMQ_TAP_ICON_COPY = `<svg class="rmq-tap-act-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>`;
+
+/**
+ * Single table column: show `payload` JSON, or full message for `data.request` (no separate app-level data node).
+ * Full envelope: JSON button / modal.
+ */
+function rmqTapDataColumnText(body) {
+  if (body == null) return "—";
+  if (typeof body !== "object") {
+    return escapeHtml(JSON.stringify(body, null, 2) || String(body));
+  }
+  if ("payload" in body) {
+    const rk =
+      body.routing_key != null && body.routing_key !== undefined ? String(body.routing_key) : "";
+    if (rk === "data.request") {
+      try {
+        return escapeHtml(JSON.stringify(body, null, 2));
+      } catch {
+        return escapeHtml(String(body));
+      }
+    }
+    const d = body.payload;
+    if (d === undefined || d === null) return "—";
+    if (typeof d === "object" && !Array.isArray(d) && Object.keys(d).length === 0) return "{ }";
+    try {
+      return escapeHtml(typeof d === "object" ? JSON.stringify(d, null, 2) : String(d));
+    } catch {
+      return escapeHtml(String(d));
+    }
+  }
   try {
-    const q = JSON.parse(localStorage.getItem(RMQ_LS_Q) || "[]");
-    const x = JSON.parse(localStorage.getItem(RMQ_LS_X) || "[]");
-    return { queues: Array.isArray(q) ? q : [], exchanges: Array.isArray(x) ? x : [] };
+    return escapeHtml(JSON.stringify(body, null, 2));
   } catch {
-    return { queues: [], exchanges: [] };
+    return escapeHtml(String(body));
   }
 }
 
-function rmqSaveChecked() {
-  const q = [...document.querySelectorAll('input[name="rmq-q"]:checked')].map((el) => el.value);
-  const x = [...document.querySelectorAll('input[name="rmq-x"]:checked')].map((el) => el.value);
-  localStorage.setItem(RMQ_LS_Q, JSON.stringify(q));
-  localStorage.setItem(RMQ_LS_X, JSON.stringify(x));
+function formatTapReceivedAt(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return `${d.toLocaleString(undefined, { hour12: false })}.${String(d.getMilliseconds()).padStart(3, "0")}`;
+}
+
+function openRmqTapJsonDialog(body) {
+  const pre = $("#rmq-tap-json-pre");
+  const dlg = $("#dialog-rmq-tap-json");
+  if (pre) {
+    try {
+      pre.textContent = JSON.stringify(body, null, 2);
+    } catch {
+      pre.textContent = String(body);
+    }
+  }
+  if (dlg && typeof dlg.showModal === "function") dlg.showModal();
+}
+
+function rmqTapRenderBuffer() {
+  const tbody = $("#rmq-tap-tbody");
+  if (!tbody) return;
+  const st = rmqTapsById.get(rmqActiveTapId);
+  const rows = st?.bufferMsgs || [];
+  if (rows.length === 0) {
+    tbody.innerHTML =
+      '<tr class="rmq-tap-empty-row"><td colspan="4" class="muted">No messages yet — activate a tap and stream over WebSocket.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows
+    .map((raw, i) => {
+      const { receivedAt, body } = rmqTapNormalizeEntry(raw);
+      const dataText = rmqTapDataColumnText(body);
+      const fullIso = receivedAt ? escapeAttr(receivedAt) : "";
+      return `<tr>
+        <td class="rmq-tap-cell-idx">${i + 1}</td>
+        <td class="rmq-tap-cell-received" title="${fullIso}">${escapeHtml(formatTapReceivedAt(receivedAt))}</td>
+        <td><pre class="rmq-tap-cell-payload rmq-tap-cell-data">${dataText}</pre></td>
+        <td class="rmq-tap-cell-actions">
+          <button type="button" class="rmq-tap-btn-json st-copy-cid" data-rmq-json="${i}" title="Full message (JSON)" aria-label="Full message JSON">${RMQ_TAP_ICON_JSON}</button>
+          <button type="button" class="rmq-tap-btn-copy-payload st-copy-cid" data-rmq-copy-payload="${i}" title="Copy data payload" aria-label="Copy data payload">${RMQ_TAP_ICON_COPY}</button>
+        </td>
+      </tr>`;
+    })
+    .join("");
+  const scroll = document.querySelector(".rmq-tap-table-scroll");
+  if (scroll) scroll.scrollTop = scroll.scrollHeight;
+}
+
+function rmqTapConnectWs(tapId) {
+  const st = $("#rmq-tap-status");
+  if (!tapId) return;
+  const tap = rmqTapsById.get(tapId);
+  if (!tap) return;
+  stopRmqTapWs(tapId);
+  tap.bufferMsgs = tap.bufferMsgs || [];
+
+  // Only render buffer if this tap is currently selected.
+  if (tapId === rmqActiveTapId) rmqTapRenderBuffer();
+
+  const ws = new WebSocket(tapWsUrl(tapId));
+  if (st && rmqActiveTapId === tapId) st.textContent = `WS connecting… tap_id=${tapId}`;
+  tap.ws = ws;
+
+  ws.onopen = () => {
+    if (st && rmqActiveTapId === tapId) st.textContent = `WS connected. tap_id=${tapId}`;
+  };
+
+  ws.onmessage = (ev) => {
+    let msg;
+    try {
+      msg = JSON.parse(ev.data);
+    } catch (e) {
+      msg = { _parse_error: "invalid_json_from_ws", _raw: String(ev.data).slice(0, 2000) };
+    }
+    tap.bufferMsgs.push({
+      receivedAt: new Date().toISOString(),
+      body: msg,
+    });
+    if (tap.bufferMsgs.length > RMQ_TAP_MAX_MESSAGES) {
+      tap.bufferMsgs = tap.bufferMsgs.slice(-RMQ_TAP_MAX_MESSAGES);
+    }
+    if (tapId === rmqActiveTapId) {
+      rmqTapRenderBuffer();
+      if (st) st.textContent = `WS received ${tap.bufferMsgs.length} msg(s). tap_id=${tapId}`;
+    }
+  };
+
+  ws.onerror = () => {
+    if (st && rmqActiveTapId === tapId) st.textContent = `WS error. tap_id=${tapId}`;
+  };
+
+  ws.onclose = () => {
+    if (st && rmqActiveTapId === tapId) st.textContent = `WS closed. tap_id=${tapId}`;
+    tap.ws = null;
+  };
+}
+
+function rmqTapPersistStatesToSession() {
+  const meta = [...rmqTapsById.values()].map((t) => ({
+    tapId: t.tapId,
+    routing_key: t.routing_key,
+    exchange: t.exchange,
+    exchange_type: t.exchange_type,
+    queue_name: t.queue_name,
+  }));
+  sessionStorage.setItem(RMQ_TAP_STATES_LS, JSON.stringify(meta));
+  sessionStorage.setItem(RMQ_TAP_ACTIVE_LS, rmqActiveTapId || "");
+}
+
+function rmqTapSetActive(tapId) {
+  if (!tapId || !rmqTapsById.has(tapId)) return;
+  rmqActiveTapId = tapId;
+  const t = rmqTapsById.get(tapId);
+  const st = $("#rmq-tap-status");
+  if (st) {
+    st.textContent = `Active tap: queue ${t.queue_name} → exchange ${t.exchange} / routing_key ${t.routing_key}`;
+  }
+  rmqTapRenderTabs();
+  rmqTapRenderBuffer();
+  rmqTapPersistStatesToSession();
+}
+
+function rmqTapShortLabel(s) {
+  const x = String(s ?? "");
+  if (x.length <= 34) return x || "—";
+  return x.slice(0, 18) + "…" + x.slice(-12);
+}
+
+function rmqTapRenderTabs() {
+  const cont = $("#rmq-tap-tabs");
+  if (!cont) return;
+  if (rmqTapsById.size === 0) {
+    cont.classList.add("muted");
+    cont.textContent = "No taps open.";
+    return;
+  }
+  cont.classList.remove("muted");
+  cont.innerHTML = "";
+  for (const [tapId, t] of rmqTapsById.entries()) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.tapId = tapId;
+    btn.textContent = rmqTapShortLabel(t.routing_key);
+    btn.className = "scheduler-exec";
+    btn.style.padding = "0.25rem 0.5rem";
+    btn.style.fontSize = "0.8rem";
+    if (tapId === rmqActiveTapId) {
+      btn.style.border = "2px solid #2c7efb";
+    }
+    cont.appendChild(btn);
+  }
+}
+
+function syncRmqTapTopicPresetFromInput() {
+  const sel = $("#rmq-tap-topic-preset");
+  const rkEl = $("#rmq-tap-rk");
+  if (!sel || !rkEl) return;
+  const cur = String(rkEl.value || "").trim();
+  if (!cur) {
+    sel.value = "";
+    return;
+  }
+  const match = [...sel.options].some((o) => o.value === cur);
+  sel.value = match ? cur : "";
+}
+
+async function loadRmqTapTopicPresets() {
+  const sel = $("#rmq-tap-topic-preset");
+  const rkEl = $("#rmq-tap-rk");
+  if (!sel) return;
+  const cur = rkEl ? String(rkEl.value || "").trim() : "";
+  sel.innerHTML = '<option value="">Custom (type routing key below)</option>';
+  const merged = new Set(RMQ_TAP_SYSTEM_TOPICS);
+  try {
+    const d = await fetchJSON("/api/v1/message-bus/tap/defaults");
+    const def = d && typeof d.default_livefeed_routing_key === "string" ? d.default_livefeed_routing_key.trim() : "";
+    if (def) merged.add(def);
+  } catch {
+    /* ignore */
+  }
+  try {
+    const r = await fetchJSON("/api/v1/message-bus/exchange-bindings");
+    if (!r.ok || !Array.isArray(r.bindings)) {
+      sel.title = r.error || "Could not load topics from RabbitMQ bindings";
+    } else {
+      sel.title = "";
+      for (const b of r.bindings) {
+        const rk = String(b.routing_key ?? "").trim();
+        if (rk) merged.add(rk);
+      }
+    }
+  } catch (e) {
+    sel.title = (sel.title || "") + (e.message || String(e));
+  }
+  const topics = [...merged].sort((a, b) => a.localeCompare(b));
+  const seen = new Set(topics);
+  for (const rk of topics) {
+    const opt = document.createElement("option");
+    opt.value = rk;
+    opt.textContent = rk;
+    sel.appendChild(opt);
+  }
+  if (cur && seen.has(cur)) sel.value = cur;
+  else syncRmqTapTopicPresetFromInput();
+}
+
+async function loadTapDefaults() {
+  const meta = $("#rmq-tap-meta");
+  const rk = $("#rmq-tap-rk");
+  try {
+    const d = await fetchJSON("/api/v1/message-bus/tap/defaults");
+    if (!d.exchange) {
+      if (meta) meta.textContent = "Could not load tap defaults.";
+      return;
+    }
+    if (meta) {
+      meta.innerHTML = `Publish path: exchange <code>${escapeHtml(d.exchange)}</code> (<code>${escapeHtml(
+        d.exchange_type || "topic"
+      )}</code>). <strong>Topic</strong> list = <em>known system topics</em> (scheduler defaults, livefeed) <strong>plus</strong> routing keys seen in <strong>RabbitMQ</strong> (queues already bound to this exchange). Topics that exist only in config/IoC but have <strong>no queue binding yet</strong> will not appear from the broker — type them manually or create a consumer binding first. Default livefeed: <code>${escapeHtml(
+        d.default_livefeed_routing_key || ""
+      )}</code>. <strong>Activate tap</strong> adds a separate tap queue (messages duplicated for inspection; workers unchanged).`;
+    }
+    if (rk && !String(rk.value || "").trim()) {
+      rk.value = d.default_livefeed_routing_key || "data.livefeed.equity_quote";
+    }
+  } catch (e) {
+    if (meta) meta.textContent = e.message || String(e);
+  }
+}
+
+function restoreTapUiFromStorage() {
+  const stop = $("#btn-rmq-tap-stop");
+
+  let meta = [];
+  try {
+    meta = JSON.parse(sessionStorage.getItem(RMQ_TAP_STATES_LS) || "[]");
+  } catch {
+    meta = [];
+  }
+  if (!Array.isArray(meta)) meta = [];
+
+  // Clear any current runtime state; this is best-effort only.
+  rmqTapsById = new Map();
+  rmqActiveTapId = sessionStorage.getItem(RMQ_TAP_ACTIVE_LS) || null;
+  for (const m of meta) {
+    if (!m || typeof m !== "object") continue;
+    if (!m.tapId) continue;
+    rmqTapsById.set(m.tapId, {
+      tapId: m.tapId,
+      bufferMsgs: [],
+      ws: null,
+      routing_key: m.routing_key || "",
+      exchange: m.exchange || "",
+      exchange_type: m.exchange_type || "topic",
+      queue_name: m.queue_name || "",
+    });
+  }
+
+  if (rmqActiveTapId && !rmqTapsById.has(rmqActiveTapId)) rmqActiveTapId = null;
+  if (!rmqActiveTapId && rmqTapsById.size > 0) rmqActiveTapId = rmqTapsById.keys().next().value;
+
+  rmqTapRenderTabs();
+  if (rmqActiveTapId) rmqTapRenderBuffer();
+  if (stop) stop.disabled = rmqTapsById.size === 0;
+
+  // Reconnect WS for restored taps (buffers repopulate as messages arrive).
+  for (const tapId of rmqTapsById.keys()) rmqTapConnectWs(tapId);
+}
+
+async function rmqTapDeleteById(tid) {
+  if (!tid) return;
+  stopRmqTapWs(tid);
+  rmqTapsById.delete(tid);
+  if (rmqActiveTapId === tid) rmqActiveTapId = null;
+
+  try {
+    await fetch(`/api/v1/message-bus/tap/${encodeURIComponent(tid)}`, { method: "DELETE" });
+  } catch (_) {
+    /* ignore */
+  }
+
+  if (!rmqActiveTapId && rmqTapsById.size > 0) rmqActiveTapId = rmqTapsById.keys().next().value;
+  rmqTapRenderTabs();
+  rmqTapRenderBuffer();
+  rmqTapPersistStatesToSession();
+}
+
+async function rmqTapStart() {
+  const rkEl = $("#rmq-tap-rk");
+  const st = $("#rmq-tap-status");
+  const v = rkEl && String(rkEl.value || "").trim();
+  if (!v) {
+    alert("Enter a routing key");
+    return;
+  }
+  try {
+    const r = await fetchJSON("/api/v1/message-bus/tap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ routing_key: v }),
+    });
+    if (!r.tap_id) throw new Error(r.error || r.detail || "tap start failed");
+    const tapId = r.tap_id;
+    rmqTapsById.set(tapId, {
+      tapId,
+      bufferMsgs: [],
+      ws: null,
+      routing_key: r.routing_key || v,
+      exchange: r.exchange || "",
+      exchange_type: r.exchange_type || "topic",
+      queue_name: r.queue_name || "",
+    });
+    rmqTapPersistStatesToSession();
+    rmqTapSetActive(tapId);
+    const stop = $("#btn-rmq-tap-stop");
+    if (stop) stop.disabled = false;
+    rmqTapConnectWs(r.tap_id);
+  } catch (e) {
+    if (st) st.textContent = e.message || String(e);
+  }
+}
+
+async function rmqTapStop() {
+  const st = $("#rmq-tap-status");
+  const stop = $("#btn-rmq-tap-stop");
+  const tid = rmqActiveTapId;
+  if (!tid) {
+    if (st) st.textContent = "No active tap to stop.";
+    if (stop) stop.disabled = true;
+    return;
+  }
+  if (st) st.textContent = `Stopping tap ${tid}…`;
+  await rmqTapDeleteById(tid);
+  if (st) st.textContent = rmqTapsById.size ? "Tap stopped; select another tab." : "All taps stopped.";
+  if (stop) stop.disabled = rmqTapsById.size === 0;
 }
 
 function fmtRate(v) {
@@ -814,163 +1376,131 @@ function fmtRate(v) {
   return Number(v).toFixed(3);
 }
 
-async function refreshMessageBusTraffic() {
+/** First-open load for Queue traffic: broker overview line + topic tap UI. */
+async function loadQueueTrafficTab() {
   const ovEl = $("#rmq-overview");
-  const tq = $("#rmq-queues-table");
-  const tx = $("#rmq-exchanges-table");
-  const st = $("#rmq-status");
-  const qChecked = [...document.querySelectorAll('input[name="rmq-q"]:checked')].map((el) => el.value);
-  const xChecked = [...document.querySelectorAll('input[name="rmq-x"]:checked')].map((el) => el.value);
   try {
-    const qUrl =
-      qChecked.length > 0
-        ? `/api/v1/message-bus/queues?${new URLSearchParams({ names: qChecked.join(",") })}`
-        : "/api/v1/message-bus/queues";
-    const xUrl =
-      xChecked.length > 0
-        ? `/api/v1/message-bus/exchanges?${new URLSearchParams({ names: xChecked.join(",") })}`
-        : "/api/v1/message-bus/exchanges";
-    const [qRes, xRes, oRes] = await Promise.all([
-      fetchJSON(qUrl),
-      fetchJSON(xUrl),
-      fetchJSON("/api/v1/message-bus/overview"),
-    ]);
+    const oRes = await fetchJSON("/api/v1/message-bus/overview");
     if (oRes.ok && oRes.overview && ovEl) {
       const o = oRes.overview;
-      ovEl.innerHTML = `Cluster <strong>${escapeHtml(o.cluster_name || "—")}</strong> · publish <code>${fmtRate(o.publish_rate_per_sec)}</code>/s · deliver_get <code>${fmtRate(o.deliver_get_rate_per_sec)}</code>/s · <span class="muted">API</span> <code>${escapeHtml(oRes.management_url || "")}</code>`;
+      ovEl.innerHTML = `Cluster <strong>${escapeHtml(o.cluster_name || "—")}</strong> · publish <code>${fmtRate(o.publish_rate_per_sec)}</code>/s · deliver_get <code>${fmtRate(o.deliver_get_rate_per_sec)}</code>/s · <span class="muted">mgmt</span> <code>${escapeHtml(oRes.management_url || "")}</code>`;
     } else if (ovEl) {
       ovEl.textContent = oRes.error ? `Overview: ${oRes.error}` : "";
     }
-    if (!qRes.ok) {
-      if (tq) tq.innerHTML = `<p class="muted">${escapeHtml(qRes.error || "")}</p>`;
-    } else if (tq) {
-      const rows = (qRes.queues || [])
-        .map(
-          (r) =>
-            `<tr><td>${escapeHtml(r.name)}</td><td>${r.messages_ready ?? "—"}</td><td>${r.messages_unacknowledged ?? "—"}</td><td>${r.messages ?? "—"}</td><td>${r.consumers ?? "—"}</td><td>${fmtRate(r.publish_rate_per_sec)}</td><td>${fmtRate(r.deliver_get_rate_per_sec)}</td></tr>`
-        )
-        .join("");
-      tq.innerHTML = `<table><thead><tr><th>Name</th><th>Ready</th><th>Unacked</th><th>Total</th><th>Consumers</th><th>Publish/s</th><th>Deliver/s</th></tr></thead><tbody>${rows || "<tr><td colspan='7'>No data</td></tr>"}</tbody></table>`;
-    }
-    if (!xRes.ok) {
-      if (tx) tx.innerHTML = `<p class="muted">${escapeHtml(xRes.error || "")}</p>`;
-    } else if (tx) {
-      const rows = (xRes.exchanges || [])
-        .map(
-          (r) =>
-            `<tr><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.exchange_type || "—")}</td><td>${fmtRate(r.publish_rate_per_sec)}</td><td>${fmtRate(r.deliver_get_rate_per_sec)}</td></tr>`
-        )
-        .join("");
-      tx.innerHTML = `<table><thead><tr><th>Name</th><th>Type</th><th>Publish/s</th><th>Deliver/s</th></tr></thead><tbody>${rows || "<tr><td colspan='4'>No data</td></tr>"}</tbody></table>`;
-    }
-    if (st) {
-      const hint =
-        qChecked.length === 0 || xChecked.length === 0
-          ? " (empty selection lists all queues / all exchanges)"
-          : "";
-      st.textContent = hint ? `Updated.${hint}` : "Updated.";
-    }
   } catch (e) {
-    if (st) st.textContent = e.message || String(e);
+    if (ovEl) ovEl.textContent = e.message || String(e);
   }
+  await loadTapDefaults();
+  restoreTapUiFromStorage();
+  await loadRmqTapTopicPresets();
 }
 
-async function loadMessageBusTrafficCatalog() {
-  const qel = $("#rmq-queue-cbs");
-  const xel = $("#rmq-exchange-cbs");
-  const st = $("#rmq-status");
-  try {
-    const [settingsData, qRes, xRes] = await Promise.all([
-      fetchJSON("/api/v1/settings"),
-      fetchJSON("/api/v1/message-bus/queues"),
-      fetchJSON("/api/v1/message-bus/exchanges"),
-    ]);
-    if (!qRes.ok) {
-      if (st) st.textContent = qRes.error || "Queues API failed";
-      if (qel) qel.textContent = qRes.error || "—";
-      if (xel) xel.textContent = xRes.ok ? "…" : xRes.error || "—";
-      return;
-    }
-    const topo = (settingsData.settings.find((s) => s.key === "bus.topology") || {}).value || {};
-    const tq = topo.queues && typeof topo.queues === "object" ? Object.values(topo.queues) : [];
-    const tex = typeof topo.exchange === "string" && topo.exchange.trim() ? [topo.exchange.trim()] : [];
+$("#rmq-tap-topic-preset")?.addEventListener("change", (ev) => {
+  const v = ev.target && ev.target.value;
+  const rkEl = $("#rmq-tap-rk");
+  if (rkEl && v) rkEl.value = v;
+});
 
-    const saved = rmqLoadCheckedFromStorage();
-    const defaultQ = new Set([...tq.map(String), ...saved.queues.map(String)]);
-    const defaultX = new Set([...tex.map(String), ...saved.exchanges.map(String)]);
+$("#rmq-tap-rk")?.addEventListener("input", () => syncRmqTapTopicPresetFromInput());
 
-    const qNames = (qRes.queues || []).map((r) => r.name).filter(Boolean).sort();
-    if (qel) {
-      qel.innerHTML = qNames
-        .map(
-          (n) =>
-            `<label><input type="checkbox" name="rmq-q" value="${escapeAttr(n)}" ${defaultQ.has(n) ? "checked" : ""} /> ${escapeHtml(n)}</label>`
-        )
-        .join("");
-      qel.classList.remove("muted");
-    }
-    if (xel) {
-      if (xRes.ok) {
-        const xNames = (xRes.exchanges || []).map((r) => r.name).filter(Boolean).sort();
-        xel.innerHTML = xNames
-          .map(
-            (n) =>
-              `<label><input type="checkbox" name="rmq-x" value="${escapeAttr(n)}" ${defaultX.has(n) ? "checked" : ""} /> ${escapeHtml(n)}</label>`
-          )
-          .join("");
-        xel.classList.remove("muted");
-      } else {
-        xel.textContent = xRes.error || "—";
-      }
-    }
-    if (st) st.textContent = "";
-    document.querySelectorAll('input[name="rmq-q"], input[name="rmq-x"]').forEach((el) => {
-      el.addEventListener("change", () => {
-        rmqSaveChecked();
-        refreshMessageBusTraffic();
-      });
-    });
-    await refreshMessageBusTraffic();
-  } catch (e) {
-    if (st) st.textContent = e.message || String(e);
-    if (qel) qel.textContent = "Error";
+$("#btn-rmq-tap-start")?.addEventListener("click", () => rmqTapStart());
+$("#btn-rmq-tap-stop")?.addEventListener("click", () => rmqTapStop());
+$("#btn-rmq-tap-clear")?.addEventListener("click", () => {
+  const t = rmqTapsById.get(rmqActiveTapId);
+  const st = $("#rmq-tap-status");
+  if (!t) {
+    if (st) st.textContent = "No active tap to clear.";
+    return;
   }
-}
+  t.bufferMsgs = [];
+  rmqTapRenderBuffer();
+  if (st) st.textContent = "Tap buffer cleared.";
+});
 
-$("#btn-rmq-refresh")?.addEventListener("click", () => refreshMessageBusTraffic());
-
-$("#rmq-live")?.addEventListener("change", (ev) => {
-  stopRmqLive();
-  if (ev.target.checked) {
-    rmqLiveTimer = setInterval(() => refreshMessageBusTraffic(), 2000);
+$("#btn-rmq-tap-copy-payloads")?.addEventListener("click", async () => {
+  const tap = rmqTapsById.get(rmqActiveTapId);
+  if (!tap || !tap.bufferMsgs.length) {
+    alert("No messages in the buffer.");
+    return;
   }
+  const parts = tap.bufferMsgs.map((raw) => {
+    const { body } = rmqTapNormalizeEntry(raw);
+    const dataOnly = rmqTapPayloadDataOnly(body);
+    try {
+      return JSON.stringify(dataOnly, null, 2);
+    } catch {
+      return String(dataOnly);
+    }
+  });
+  const ok = await copyTextToClipboard(parts.join("\n\n---\n\n"));
+  if (!ok) alert("Could not copy to clipboard.");
+});
+
+$("#btn-rmq-tap-json-close")?.addEventListener("click", () => {
+  $("#dialog-rmq-tap-json")?.close();
+});
+
+$("#rmq-tap-buffer-wrap")?.addEventListener("click", async (ev) => {
+  const jsonBtn = ev.target.closest("button[data-rmq-json]");
+  if (jsonBtn) {
+    const i = parseInt(jsonBtn.getAttribute("data-rmq-json") || "", 10);
+    const tap = rmqTapsById.get(rmqActiveTapId);
+    const raw = tap?.bufferMsgs?.[i];
+    const { body } = rmqTapNormalizeEntry(raw);
+    openRmqTapJsonDialog(body);
+    return;
+  }
+  const copyBtn = ev.target.closest("button[data-rmq-copy-payload]");
+  if (copyBtn) {
+    const i = parseInt(copyBtn.getAttribute("data-rmq-copy-payload") || "", 10);
+    const tap = rmqTapsById.get(rmqActiveTapId);
+    const raw = tap?.bufferMsgs?.[i];
+    const { body } = rmqTapNormalizeEntry(raw);
+    const dataOnly = rmqTapPayloadDataOnly(body);
+    let text;
+    try {
+      text = JSON.stringify(dataOnly, null, 2);
+    } catch {
+      text = String(dataOnly);
+    }
+    const ok = await copyTextToClipboard(text);
+    if (ok) {
+      copyBtn.classList.add("st-copy-cid--done");
+      setTimeout(() => copyBtn.classList.remove("st-copy-cid--done"), 1400);
+    } else {
+      alert("Could not copy to clipboard.");
+    }
+  }
+});
+
+$("#rmq-tap-tabs")?.addEventListener("click", (ev) => {
+  const target = ev?.target;
+  const btn = target && target.closest ? target.closest("button[data-tap-id]") : null;
+  if (!btn) return;
+  const tapId = btn.dataset.tapId;
+  rmqTapSetActive(tapId);
 });
 
 document.querySelectorAll(".tab").forEach((btn) => {
   btn.addEventListener("click", () => {
-    const previousActive = document.querySelector(".tab.active");
-    if (previousActive && previousActive.dataset.tab === "rmq-traffic" && btn !== previousActive) {
-      stopRmqLive();
-      const live = $("#rmq-live");
-      if (live) live.checked = false;
-    }
     document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
     document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
     btn.classList.add("active");
     const panel = $("#panel-" + btn.dataset.tab);
     if (panel) panel.classList.add("active");
-    if (btn.dataset.tab === "grafana") loadSettings();
+    if (btn.dataset.tab === "grafana" || btn.dataset.tab === "rabbitmq-management") loadSettings();
     if (btn.dataset.tab === "data-acquisition") {
       loadDaReadiness();
       loadDaDevices();
     }
-    if (btn.dataset.tab === "scheduler-tasks") loadSchedulerTasks();
+    if (btn.dataset.tab === "scheduler-tasks") {
+      loadSchedulerManagement();
+      loadSchedulerTasks();
+    }
     if (btn.dataset.tab === "rmq-traffic") {
       if (!mbusCatalogLoaded) {
         mbusCatalogLoaded = true;
-        loadMessageBusTrafficCatalog();
-      } else {
-        refreshMessageBusTraffic();
+        void loadQueueTrafficTab();
       }
     }
   });
@@ -1109,28 +1639,255 @@ if (stPreset && stFreqInput) {
   });
 }
 
-function openExtensionManifestDialog(section) {
-  const dlg = $("#dialog-manifest");
-  const pre = $("#dialog-manifest-pre");
-  const title = $("#dialog-manifest-title");
-  if (!dlg || !pre) return;
-  if (title) {
-    title.textContent = "Extension manifest";
+/** First top-level `key: value` in extension YAML block (best-effort; worker snippet). */
+function parseExtensionYamlScalar(yamlText, key) {
+  if (!yamlText || typeof yamlText !== "string") return null;
+  const esc = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^\\s*${esc}:\\s*(.+)$`, "m");
+  const mm = yamlText.match(re);
+  if (!mm) return null;
+  return mm[1]
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .replace(/\s+#.*$/, "");
+}
+
+/** Worker may return YAML text or a parsed object; manifest “current value” uses either. */
+function getExtensionEffectiveScalar(effectiveYaml, key) {
+  if (effectiveYaml != null && typeof effectiveYaml === "object" && !Array.isArray(effectiveYaml)) {
+    if (!Object.prototype.hasOwnProperty.call(effectiveYaml, key)) return null;
+    const v = effectiveYaml[key];
+    if (v == null) return null;
+    if (typeof v === "object") return JSON.stringify(v);
+    return String(v);
   }
-  pre.textContent = "Loading…";
-  dlg.showModal();
-  const url = `/api/v1/extensions/manifest?section=${encodeURIComponent(section)}`;
-  fetchJSON(url)
-    .then((data) => {
-      const m = data && data.manifest;
-      if (title && m && m.extension_section) {
-        title.textContent = String(m.extension_section);
+  if (typeof effectiveYaml === "string") return parseExtensionYamlScalar(effectiveYaml, key);
+  return null;
+}
+
+/**
+ * Best-effort YAML text for plain JSON (extension config shape).
+ * Used when `effective_extension_yaml` is still an object after JSON parse
+ * (e.g. older control-plane or direct worker-shaped payloads).
+ */
+function plainObjectToYaml(value, indent = 0) {
+  const pad = (d) => "  ".repeat(d);
+  if (value === null) return "null";
+  if (value === undefined) return "null";
+  const ty = typeof value;
+  if (ty === "string") {
+    if (value === "" || /^[\w#./:@~-]+$/.test(value)) return value;
+    return JSON.stringify(value);
+  }
+  if (ty === "number" || ty === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    const lines = [];
+    for (const el of value) {
+      if (el !== null && typeof el === "object") {
+        const block = plainObjectToYaml(el, indent + 1);
+        lines.push(`${pad(indent)}-\n${block}`);
+      } else {
+        lines.push(`${pad(indent)}- ${plainObjectToYaml(el, 0)}`);
       }
-      pre.textContent = JSON.stringify(m != null ? m : data, null, 2);
-    })
-    .catch((e) => {
-      pre.textContent = e.message || String(e);
-    });
+    }
+    return lines.join("\n");
+  }
+  if (ty === "object") {
+    const keys = Object.keys(value);
+    if (keys.length === 0) return "{}";
+    const lines = [];
+    for (const k of keys) {
+      const child = value[k];
+      if (child !== null && typeof child === "object") {
+        const inner = plainObjectToYaml(child, indent + 1);
+        lines.push(`${pad(indent)}${k}:\n${inner}`);
+      } else {
+        lines.push(`${pad(indent)}${k}: ${plainObjectToYaml(child, 0)}`);
+      }
+    }
+    return lines.join("\n");
+  }
+  return String(value);
+}
+
+/** Effective tab: YAML string from API, or YAML rendered from a plain object. */
+function formatIocEffectiveExtensionYamlForDisplay(v) {
+  if (v == null) return "—";
+  if (typeof v === "string") return v;
+  if (typeof v === "object") return plainObjectToYaml(v, 0);
+  return String(v);
+}
+
+/** When the worker does not return effective YAML, show manifest routing defaults (not live effective config). */
+function effectiveFallbackFromManifest(m) {
+  if (!m || typeof m !== "object") return "—";
+  const lines = [];
+  lines.push(
+    "# Effective extension YAML is not available from the worker (unreachable, missing section, or error)."
+  );
+  lines.push(
+    "# Below: default subscribe/publish routing keys from the extension manifest. " +
+      "Authoritative wiring is execution-runtime YAML (extensions.<section>)."
+  );
+  lines.push("");
+  const bus = m.bus_topics || {};
+  const subs = Array.isArray(bus.subscribe_routing_keys) ? bus.subscribe_routing_keys : [];
+  const pubs = Array.isArray(bus.publish_routing_keys) ? bus.publish_routing_keys : [];
+  lines.push(`default_subscribe_routing_keys:`);
+  lines.push(subs.length ? subs.map((k) => `  - ${k}`).join("\n") : "  []");
+  lines.push(`default_publish_routing_keys:`);
+  lines.push(pubs.length ? pubs.map((k) => `  - ${k}`).join("\n") : "  []");
+  return lines.join("\n");
+}
+
+function effectiveYamlOrManifestFallback(effYaml, m) {
+  if (effYaml != null) return formatIocEffectiveExtensionYamlForDisplay(effYaml);
+  if (m && typeof m === "object") return effectiveFallbackFromManifest(m);
+  return "—";
+}
+
+function manifestSectionHtml(title, bodyHtml) {
+  return `<section class="ext-manifest-section"><h4 class="ext-manifest-h">${escapeHtml(title)}</h4>${bodyHtml}</section>`;
+}
+
+/** Structured manifest view (no raw JSON in main body). */
+function renderManifestStructuredHtml(m, effectiveYaml) {
+  if (!m || typeof m !== "object") {
+    return '<p class="muted">No manifest data.</p>';
+  }
+  const parts = [];
+  if (m.summary) {
+    parts.push(`<p class="ext-manifest-summary muted">${escapeHtml(String(m.summary))}</p>`);
+  }
+  const p = m.persistency;
+  let persistHtml = "";
+  if (p) {
+    const need =
+      p.persistency_required === true ? "Required" : p.persistency_required === false ? "Optional" : "—";
+    const handleEff = getExtensionEffectiveScalar(effectiveYaml, "persistency");
+    const current =
+      handleEff != null
+        ? `<code>${escapeHtml(handleEff)}</code>`
+        : '<span class="muted">Not available (worker unreachable or key missing in YAML)</span>';
+    persistHtml = `<dl class="ext-manifest-dl">
+      <dt>Need persistency handle</dt><dd><strong>${escapeHtml(need)}</strong></dd>
+      <dt>YAML key</dt><dd>${p.yaml_key ? `<code>${escapeHtml(String(p.yaml_key))}</code>` : "—"}</dd>
+      <dt>Expected config type</dt><dd>${
+        p.expected_config
+          ? `<code class="ext-manifest-long">${escapeHtml(String(p.expected_config))}</code>`
+          : "—"
+      }</dd>
+      <dt>Current value (worker)</dt><dd>${current}</dd>
+    </dl>`;
+    if (p.missing_message) {
+      persistHtml += `<p class="ext-manifest-note muted">${escapeHtml(String(p.missing_message))}</p>`;
+    }
+  } else {
+    persistHtml = '<p class="muted">No persistency metadata for this extension.</p>';
+  }
+  parts.push(manifestSectionHtml("Persistency", persistHtml));
+
+  const entRows = [];
+  if (Array.isArray(m.persisted_entity_refs) && m.persisted_entity_refs.length) {
+    entRows.push(
+      `<dt>Contract entity types</dt><dd><ul class="ext-manifest-ul">${m.persisted_entity_refs
+        .map((x) => `<li><code>${escapeHtml(String(x))}</code></li>`)
+        .join("")}</ul></dd>`
+    );
+  }
+  if (p && Array.isArray(p.required_sql_tables) && p.required_sql_tables.length) {
+    entRows.push(
+      `<dt>Required SQL tables</dt><dd><ul class="ext-manifest-ul">${p.required_sql_tables
+        .map((x) => `<li><code>${escapeHtml(String(x))}</code></li>`)
+        .join("")}</ul></dd>`
+    );
+  }
+  if (p && Array.isArray(p.deferred_sql_tables) && p.deferred_sql_tables.length) {
+    entRows.push(
+      `<dt>Deferred SQL tables</dt><dd><ul class="ext-manifest-ul">${p.deferred_sql_tables
+        .map((x) => `<li><code>${escapeHtml(String(x))}</code></li>`)
+        .join("")}</ul></dd>`
+    );
+  }
+  const entitiesUsed =
+    entRows.length > 0
+      ? `<dl class="ext-manifest-dl">${entRows.join("")}</dl>`
+      : '<p class="muted">—</p>';
+  parts.push(manifestSectionHtml("Entities & tables (uses)", entitiesUsed));
+
+  const msg = m.messaging;
+  let pubEnt = "";
+  if (msg && (msg.entity_type || msg.orm_relation)) {
+    pubEnt = '<dl class="ext-manifest-dl">';
+    if (msg.entity_type) {
+      pubEnt += `<dt>Bus payload entity type</dt><dd><code>${escapeHtml(String(msg.entity_type))}</code></dd>`;
+    }
+    if (msg.orm_relation) {
+      pubEnt += `<dt>ORM relation</dt><dd><code>${escapeHtml(String(msg.orm_relation))}</code></dd>`;
+    }
+    if (msg.publish_routing_key_default) {
+      pubEnt += `<dt>Default publish routing key</dt><dd><code>${escapeHtml(
+        String(msg.publish_routing_key_default)
+      )}</code></dd>`;
+    }
+    const pk = parseExtensionYamlScalar(effectiveYaml, "publish_routing_key");
+    if (pk) {
+      pubEnt += `<dt>Current publish routing key (worker)</dt><dd><code>${escapeHtml(pk)}</code></dd>`;
+    }
+    pubEnt += "</dl>";
+    if (msg.transport_note) {
+      pubEnt += `<p class="muted ext-manifest-note">${escapeHtml(String(msg.transport_note))}</p>`;
+    }
+  } else {
+    pubEnt =
+      '<p class="muted">This extension does not publish application payloads to the message bus.</p>';
+  }
+  parts.push(manifestSectionHtml("Entities on the bus (publish)", pubEnt));
+
+  const bus = m.bus_topics || {};
+  const subs = Array.isArray(bus.subscribe_routing_keys) ? bus.subscribe_routing_keys : [];
+  const pubs = Array.isArray(bus.publish_routing_keys) ? bus.publish_routing_keys : [];
+  let topicsHtml = '<dl class="ext-manifest-dl">';
+  topicsHtml += `<dt>Subscribe (routing keys)</dt><dd>${
+    subs.length
+      ? `<ul class="ext-manifest-ul">${subs
+          .map((k) => `<li><code>${escapeHtml(String(k))}</code></li>`)
+          .join("")}</ul>`
+      : '<span class="muted">—</span>'
+  }</dd>`;
+  topicsHtml += `<dt>Publish (defaults)</dt><dd>${
+    pubs.length
+      ? `<ul class="ext-manifest-ul">${pubs
+          .map((k) => `<li><code>${escapeHtml(String(k))}</code></li>`)
+          .join("")}</ul>`
+      : '<span class="muted">—</span>'
+  }</dd>`;
+  topicsHtml += "</dl>";
+  if (bus.note) {
+    topicsHtml += `<p class="muted ext-manifest-note">${escapeHtml(String(bus.note))}</p>`;
+  }
+  parts.push(manifestSectionHtml("Topics (message bus)", topicsHtml));
+
+  return `<div class="ext-manifest-wrap">${parts.join("")}</div>`;
+}
+
+const _EXT_CONFIG_TABS = ["effective", "documentation", "manifest"];
+
+function setExtensionConfigTab(which) {
+  const dlg = $("#dialog-extension-config");
+  if (!dlg) return;
+  const w = _EXT_CONFIG_TABS.includes(which) ? which : "effective";
+  for (const t of _EXT_CONFIG_TABS) {
+    const btn = dlg.querySelector(`[data-ext-config-tab="${t}"]`);
+    const panel = document.getElementById(`ext-config-panel-${t}`);
+    const active = t === w;
+    if (btn) {
+      btn.classList.toggle("ioc-tab--active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    }
+    if (panel) panel.hidden = !active;
+  }
 }
 
 const _IOC_EFFECTIVE_KEYS = new Set([
@@ -1160,81 +1917,198 @@ function formatIocDialogPayload(ioc) {
   return { effective, documentation };
 }
 
-function openExtensionIocDialog(section) {
-  const dlg = $("#dialog-ioc");
-  const pre = $("#dialog-ioc-pre");
-  const title = $("#dialog-ioc-title");
-  if (!dlg || !pre) return;
-  if (title) {
-    title.textContent = "Extension IoC (effective YAML)";
-  }
-  pre.textContent = "Loading…";
-  dlg.showModal();
-  const url = `/api/v1/extensions/ioc?section=${encodeURIComponent(section)}`;
-  fetchJSON(url)
-    .then((data) => {
-      const ioc = data && data.ioc;
-      if (title && ioc && ioc.extension_section) {
-        title.textContent = `IoC — ${String(ioc.extension_section)}`;
+function openExtensionConfigDialog(section, taskId, daComponentId) {
+  const dlg = $("#dialog-extension-config");
+  const title = $("#dialog-extension-config-title");
+  const meta = $("#ext-config-effective-meta");
+  const effPre = $("#ext-config-effective-pre");
+  const docPre = $("#ext-config-doc-pre");
+  const manBody = $("#ext-config-manifest-body");
+  const rawPre = $("#ext-config-manifest-raw-pre");
+  const provisionWrap = $("#ext-config-provision-wrap");
+  const provisionBtn = $("#btn-ext-config-provision");
+  const provisionHint = $("#ext-config-provision-hint");
+  if (!dlg || !effPre || !docPre || !manBody) return;
+
+  const tid = taskId != null && String(taskId).trim() !== "" ? String(taskId).trim() : "";
+  const daCid =
+    daComponentId != null && String(daComponentId).trim() !== "" ? String(daComponentId).trim() : "";
+  if (provisionWrap && provisionBtn) {
+    if (tid) {
+      provisionWrap.hidden = false;
+      provisionBtn.dataset.provisionTaskId = tid;
+      delete provisionBtn.dataset.provisionDaComponentId;
+      if (provisionHint) {
+        provisionHint.textContent =
+          "Schema only: POST execution-runtime /v1/extensions/provision (DDL) for this scheduler task's extension. When persistency.ensure_tables_on_sync is true, the worker may already create tables on startup.";
       }
-      const payload = ioc != null ? formatIocDialogPayload(ioc) : data;
-      pre.textContent = JSON.stringify(payload, null, 2);
-    })
-    .catch((e) => {
-      pre.textContent = e.message || String(e);
-    });
+    } else if (daCid) {
+      provisionWrap.hidden = false;
+      provisionBtn.dataset.provisionDaComponentId = daCid;
+      delete provisionBtn.dataset.provisionTaskId;
+      if (provisionHint) {
+        provisionHint.textContent =
+          "Schema only: POST execution-runtime /v1/extensions/provision (DDL) for this data-acquisition device's extension. When persistency.ensure_tables_on_sync is true, the worker may already create tables on startup.";
+      }
+    } else {
+      provisionWrap.hidden = true;
+      delete provisionBtn.dataset.provisionTaskId;
+      delete provisionBtn.dataset.provisionDaComponentId;
+    }
+  }
+
+  setExtensionConfigTab("effective");
+  if (title) title.textContent = "Configuration";
+  if (meta) meta.innerHTML = "";
+  effPre.textContent = "Loading…";
+  docPre.textContent = "Loading…";
+  manBody.innerHTML = '<p class="muted">Loading…</p>';
+  if (rawPre) rawPre.textContent = "";
+  dlg.showModal();
+
+  const manUrl = `/api/v1/extensions/manifest?section=${encodeURIComponent(section)}`;
+  const iocUrl = `/api/v1/extensions/ioc?section=${encodeURIComponent(section)}`;
+
+  Promise.allSettled([fetchJSON(manUrl), fetchJSON(iocUrl)]).then((results) => {
+    const manOk = results[0].status === "fulfilled" ? results[0].value : null;
+    const iocOk = results[1].status === "fulfilled" ? results[1].value : null;
+    const manErr = results[0].status === "rejected" ? results[0].reason : null;
+    const iocErr = results[1].status === "rejected" ? results[1].reason : null;
+
+    const m = manOk && manOk.manifest;
+    const ioc = iocOk && iocOk.ioc;
+    const extTitle =
+      (m && m.extension_section) || (ioc && ioc.extension_section) || section;
+    if (title) title.textContent = `Configuration — ${extTitle}`;
+
+    const effYaml = ioc && ioc.effective_extension_yaml;
+
+    if (m) {
+      manBody.innerHTML = renderManifestStructuredHtml(m, effYaml != null ? effYaml : null);
+      if (rawPre) rawPre.textContent = JSON.stringify(m, null, 2);
+    } else {
+      const msg = manErr && manErr.message ? String(manErr.message) : "Manifest unavailable.";
+      manBody.innerHTML = `<p class="bad">${escapeHtml(msg)}</p>`;
+      if (rawPre) rawPre.textContent = "";
+    }
+
+    if (ioc) {
+      const metaLines = [];
+      if (ioc.effective_error) {
+        metaLines.push(`<span class="bad">Worker: ${escapeHtml(String(ioc.effective_error))}</span>`);
+      } else {
+        if (ioc.effective_config_file) {
+          metaLines.push(`Config: <code>${escapeHtml(String(ioc.effective_config_file))}</code>`);
+        }
+        if (ioc.effective_redacted != null) {
+          metaLines.push(`Redacted: ${ioc.effective_redacted ? "yes" : "no"}`);
+        }
+        if (ioc.effective_source) {
+          metaLines.push(`Source: <code>${escapeHtml(String(ioc.effective_source))}</code>`);
+        }
+      }
+      if (meta) meta.innerHTML = metaLines.length ? metaLines.join(" · ") : "";
+      effPre.textContent = effectiveYamlOrManifestFallback(effYaml, m);
+
+      const payload = formatIocDialogPayload(ioc);
+      docPre.textContent = JSON.stringify(payload.documentation || {}, null, 2);
+    } else {
+      const msg = iocErr && iocErr.message ? String(iocErr.message) : "IoC unavailable.";
+      if (meta) meta.innerHTML = `<span class="bad">${escapeHtml(msg)}</span>`;
+      effPre.textContent = m ? effectiveFallbackFromManifest(m) : "—";
+      docPre.textContent = msg;
+    }
+  });
 }
 
-$("#btn-manifest-close")?.addEventListener("click", () => {
-  $("#dialog-manifest")?.close();
+$("#dialog-extension-config")?.addEventListener("click", (ev) => {
+  const tabBtn = ev.target.closest("[data-ext-config-tab]");
+  if (!tabBtn || !$("#dialog-extension-config")?.contains(tabBtn)) return;
+  const t = tabBtn.getAttribute("data-ext-config-tab");
+  if (t) setExtensionConfigTab(t);
 });
 
-$("#btn-ioc-close")?.addEventListener("click", () => {
-  $("#dialog-ioc")?.close();
+$("#btn-extension-config-close")?.addEventListener("click", () => {
+  $("#dialog-extension-config")?.close();
+});
+
+async function runSchedulerTaskProvision(taskId, button) {
+  if (!taskId) return;
+  if (button) button.disabled = true;
+  try {
+    const r = await fetch(`/api/v1/scheduler/tasks/${taskId}/provision`, { method: "POST" });
+    const raw = await r.text();
+    let data = {};
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      data = {};
+    }
+    if (!r.ok) {
+      const msg =
+        formatApiErrorBody(data) ||
+        (raw && raw.length < 2000 ? raw : "") ||
+        "(empty response)";
+      alert(`Prepare DB failed (HTTP ${r.status})\n${msg}`);
+    } else {
+      alert(`Prepare DB\n\n${JSON.stringify(data, null, 2)}`);
+    }
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function runDaDeviceProvision(componentId, button) {
+  if (!componentId) return;
+  if (button) button.disabled = true;
+  try {
+    const r = await fetch(
+      `/api/v1/extensions/data-acquisition/devices/${encodeURIComponent(componentId)}/provision`,
+      { method: "POST" }
+    );
+    const raw = await r.text();
+    let data = {};
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      data = {};
+    }
+    if (!r.ok) {
+      const msg =
+        formatApiErrorBody(data) ||
+        (raw && raw.length < 2000 ? raw : "") ||
+        "(empty response)";
+      alert(`Prepare DB failed (HTTP ${r.status})\n${msg}`);
+    } else {
+      alert(`Prepare DB\n\n${JSON.stringify(data, null, 2)}`);
+    }
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+$("#btn-ext-config-provision")?.addEventListener("click", async () => {
+  const btn = $("#btn-ext-config-provision");
+  const daCid = btn && btn.dataset.provisionDaComponentId;
+  if (daCid) {
+    await runDaDeviceProvision(daCid, btn);
+    return;
+  }
+  const id = btn && btn.dataset.provisionTaskId;
+  if (!id) return;
+  await runSchedulerTaskProvision(id, btn);
 });
 
 $("#st-tasks-out")?.addEventListener("click", async (ev) => {
-  const manBtn = ev.target.closest("button[data-st-manifest]");
-  if (manBtn) {
-    const section = manBtn.getAttribute("data-st-manifest");
-    if (section) openExtensionManifestDialog(section);
-    return;
-  }
-
-  const iocBtn = ev.target.closest("button[data-st-ioc]");
-  if (iocBtn) {
-    const section = iocBtn.getAttribute("data-st-ioc");
-    if (section) openExtensionIocDialog(section);
-    return;
-  }
-
-  const provBtn = ev.target.closest("button[data-st-provision]");
-  if (provBtn) {
-    const id = provBtn.getAttribute("data-st-provision");
-    provBtn.disabled = true;
-    try {
-      const r = await fetch(`/api/v1/scheduler/tasks/${id}/provision`, { method: "POST" });
-      const raw = await r.text();
-      let data = {};
-      try {
-        data = raw ? JSON.parse(raw) : {};
-      } catch {
-        data = {};
-      }
-      if (!r.ok) {
-        const msg =
-          formatApiErrorBody(data) ||
-          (raw && raw.length < 2000 ? raw : "") ||
-          "(empty response)";
-        alert(`Prepare DB failed (HTTP ${r.status})\n${msg}`);
-      } else {
-        alert(`Prepare DB\n\n${JSON.stringify(data, null, 2)}`);
-      }
-    } catch (e) {
-      alert(e.message);
-    } finally {
-      provBtn.disabled = false;
-    }
+  const cfgBtn = ev.target.closest("button[data-st-config]");
+  if (cfgBtn) {
+    const section = cfgBtn.getAttribute("data-st-config");
+    const taskId = cfgBtn.getAttribute("data-st-config-task");
+    if (section) openExtensionConfigDialog(section, taskId || null);
     return;
   }
 
@@ -1307,6 +2181,32 @@ $("#st-tasks-out")?.addEventListener("click", async (ev) => {
     }
     return;
   }
+  // TODO(scheduler): When task rows get preset + seconds UI, keep PATCH body `{ frequency_seconds }` unchanged.
+  const saveFreq = ev.target.closest("button[data-st-save-freq]");
+  if (saveFreq) {
+    const id = saveFreq.getAttribute("data-st-save-freq");
+    const row = saveFreq.closest("tr");
+    const input = row?.querySelector(`input[data-st-freq="${id}"]`);
+    const n = input ? parseInt(String(input.value || "").trim(), 10) : NaN;
+    if (!id || !Number.isFinite(n) || n < 1 || n > 2592000) {
+      alert("Interval must be an integer between 1 and 2592000 seconds.");
+      return;
+    }
+    saveFreq.disabled = true;
+    try {
+      await fetchJSON(`/api/v1/scheduler/tasks/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ frequency_seconds: n }),
+      });
+      await loadSchedulerTasks();
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      saveFreq.disabled = false;
+    }
+    return;
+  }
   const toggle = ev.target.closest("button[data-st-toggle]");
   if (toggle) {
     const id = toggle.getAttribute("data-st-toggle");
@@ -1343,20 +2243,25 @@ $("#st-tasks-out")?.addEventListener("click", async (ev) => {
 });
 
 $("#da-devices-out")?.addEventListener("click", async (ev) => {
+  const cfgBtn = ev.target.closest("button[data-da-config]");
+  if (cfgBtn) {
+    const section = cfgBtn.getAttribute("data-da-config");
+    const daCid = cfgBtn.getAttribute("data-da-cid");
+    if (section) openExtensionConfigDialog(section, null, daCid || null);
+    return;
+  }
+
   const testBtn = ev.target.closest("button.btn-da-test");
   if (testBtn) {
     const rawCid = testBtn.dataset.cid;
     if (!rawCid) return;
     testBtn.disabled = true;
     try {
-      const r = await fetchJSON(
-        `/api/v1/extensions/data-acquisition/devices/${encodeURIComponent(rawCid)}/test`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ issued_by: "ui" }),
-        }
-      );
+      const r = await fetchJSON(`/api/v1/extensions/data-acquisition/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ component_id: rawCid, issued_by: "ui" }),
+      });
       const title = r.ok ? "Connectivity OK" : "Connectivity failed";
       alert(`${title}\n\n${JSON.stringify(r, null, 2)}`);
       await loadDaDevices();
@@ -1365,34 +2270,10 @@ $("#da-devices-out")?.addEventListener("click", async (ev) => {
     } finally {
       testBtn.disabled = false;
     }
-    return;
-  }
-
-  const btn = ev.target.closest("button.btn-da-toggle");
-  if (!btn) return;
-  const rawCid = btn.dataset.cid;
-  if (!rawCid) return;
-  const wantEnabled = btn.textContent.trim() === "Enable";
-  btn.disabled = true;
-  try {
-    await fetchJSON(
-      `/api/v1/extensions/data-acquisition/devices/${encodeURIComponent(rawCid)}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: wantEnabled, issued_by: "ui" }),
-      }
-    );
-    await loadDaDevices();
-    await loadComponents();
-  } catch (e) {
-    alert(e.message);
-  } finally {
-    btn.disabled = false;
   }
 });
 
-$("#components-out")?.addEventListener("click", async (ev) => {
+$("#scheduler-management-out")?.addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button.scheduler-exec");
   if (!btn) return;
   const row = btn.closest(".component-row");

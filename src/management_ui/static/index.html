@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- Operator UI (assets: management-ui package). Bump ?v= on styles.css and app.js together. ASSET_CACHE_BUST: v=42 -->
+<!-- Operator UI (assets: management-ui package). Bump ?v= on styles.css and app.js together. ASSET_CACHE_BUST: v=79 -->
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="nelson4-management-ui-build" content="36" />
+  <meta name="nelson4-management-ui-build" content="45-tap-no-header-col" />
   <title>Operator control</title>
   <link rel="icon" href="/assets/favicon.svg?v=1" type="image/svg+xml" />
   <style id="management-ui-critical">
@@ -19,21 +19,12 @@
     .st-interval-row{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
     .st-interval-row input[type="number"]{min-width:9rem;padding:.45rem .55rem;border-radius:6px;border:1px solid #2f3336;background:#000;color:#e7e9ea;font-size:.85rem}
     .st-scheduler-notes ul.st-notes-list{margin:.35rem 0 .75rem 1.1rem;padding:0;font-size:.78rem;line-height:1.45;max-width:52rem}
-    .rmq-picks{display:flex;flex-wrap:wrap;gap:1rem 2rem;margin:.75rem 0 1rem;align-items:flex-start}
-    .rmq-picks-col{flex:1 1 18rem;min-width:0}
-    .rmq-picks-col h4{margin:0 0 .35rem;font-size:.85rem}
-    .rmq-cb-grid{display:flex;flex-direction:column;gap:.25rem;max-height:14rem;overflow:auto;padding:.35rem;border:1px solid #2f3336;border-radius:6px;background:#0a0c0f;font-size:.78rem}
-    .rmq-cb-grid label{display:flex;gap:.35rem;align-items:center;cursor:pointer}
-    .rmq-table-wrap{overflow:auto;max-width:100%}
-    .rmq-table-wrap table{border-collapse:collapse;font-size:.78rem;width:100%}
-    .rmq-table-wrap th,.rmq-table-wrap td{border:1px solid #2f3336;padding:.35rem .5rem;text-align:left}
-    .rmq-table-wrap th{background:#141619}
   </style>
-  <link rel="stylesheet" href="/assets/styles.css?v=30" />
+  <link rel="stylesheet" href="/assets/styles.css?v=47" />
 </head>
 <body>
   <header class="top">
-    <h1>Operator control</h1>
+    <h1>Operator control <span id="operator-version" class="operator-version muted" title="Package versions from /api/v1/health/detailed"></span></h1>
     <div class="global-actions">
       <button type="button" id="btn-reload" title="Clear settings cache">Reload config</button>
       <span class="hint">Full restart: <code>docker compose restart control-plane</code></span>
@@ -42,9 +33,10 @@
 
   <nav class="tabs">
     <button class="tab active" data-tab="dash">Dashboard</button>
-    <button class="tab" data-tab="scheduler-tasks">Scheduler tasks</button>
+    <button class="tab" data-tab="scheduler-tasks">Scheduler</button>
     <button class="tab" data-tab="data-acquisition">Data acquisition</button>
     <button class="tab" data-tab="rmq-traffic">Queue traffic</button>
+    <button class="tab" data-tab="rabbitmq-management">RabbitMQ</button>
     <button class="tab" data-tab="settings">Settings</button>
     <button class="tab" data-tab="grafana">Metrics &amp; logs</button>
   </nav>
@@ -57,20 +49,25 @@
       </div>
       <h2>Registered components</h2>
       <p class="muted scheduler-section-hint">
-        The built-in <strong>management-scheduler</strong> (command dropdown + Execute) appears here.
+        Data-acquisition slots shown here; per-extension health is owned by each extension (IoC or registered) and
+        surfaced via execution-runtime. Use the <strong>Scheduler</strong> tab for scheduler commands and tasks.
       </p>
       <div id="components-out" class="components-out">Loading…</div>
     </section>
 
     <section id="panel-scheduler-tasks" class="panel">
-      <h2>Scheduler tasks — automatic bus publishes</h2>
+      <h2>Scheduler</h2>
+      <p class="muted">
+        Add recurring bus publishes and review tasks first. Scheduler commands (pause / resume / status) run against execution-runtime below.
+      </p>
+      <h3>Scheduled tasks</h3>
       <p class="muted">
         Define <strong>topic</strong> (RabbitMQ routing key), <strong>payload</strong> (JSON), and <strong>interval</strong> (10s–30 days).
         <strong>Run now</strong> publishes the full payload; <strong>Test</strong> sends a small connectivity probe on the same topic.
         Task rows show last run and last test outcomes (Nelson3-style). In-memory list until registry persistence is wired to Postgres.
       </p>
       <div id="st-scheduler-notes" class="muted st-scheduler-notes" aria-live="polite"></div>
-      <h3>Add task</h3>
+      <h4>Add task</h4>
       <form id="form-st-task" class="form-st">
         <label class="form-label">Name</label>
         <input name="name" id="st-name" placeholder="e.g. Intraday gather for polygon" required />
@@ -101,21 +98,35 @@
         <button type="submit" class="btn-primary">Add task</button>
       </form>
       <div id="st-form-result" class="da-register-result" aria-live="polite"></div>
-      <h3>Tasks</h3>
+      <h4>Tasks</h4>
       <div id="st-tasks-out" class="st-tasks-out muted">Open this tab to load tasks.</div>
+      <h3>Commands</h3>
+      <div id="scheduler-management-out" class="scheduler-management-out">Loading…</div>
     </section>
 
     <section id="panel-data-acquisition" class="panel">
-      <h2>Data acquisition — register device</h2>
+      <h2>Data acquisition</h2>
       <p class="muted">
-        Register logical devices in the component registry (Postgres). Workers run in <strong>execution-runtime</strong> and other extensions.
+        <strong>Persistency and extension bus topics</strong> are defined in <strong>execution-runtime</strong> YAML
+        (<code>EXECUTION_RUNTIME_CONFIG_FILE</code>, e.g. <code>config.postgres-polygon.yaml</code>):
+        top-level <code>persistency.*</code> blocks, then each <code>extensions.&lt;section&gt;</code> with
+        <code>persistency:</code> (handle), <code>publish_routing_key</code> / subscribe behavior per extension, and OAuth or other keys.
+        Restart the worker after edits. The <strong>Scheduler</strong> tab only schedules recurring <em>messages</em> (topic + payload);
+        it does not replace extension YAML. On a scheduler task, <strong>Configuration → Manifest</strong> shows manifest defaults
+        (routing keys, entities). The form below targets a future Postgres device registry and is not active yet (API 501).
       </p>
       <div class="da-actions">
         <button type="button" class="btn-primary" id="btn-da-readiness">Check readiness</button>
         <span class="muted hint-inline">Verifies Postgres, RabbitMQ, and registry (split layout: no embedded DA consumers in control-plane).</span>
       </div>
       <div id="da-readiness-out" class="da-readiness-out muted">Open this tab or click <strong>Check readiness</strong>.</div>
-      <h3>Register new device</h3>
+      <h3>Register new device (planned)</h3>
+      <p class="muted da-register-planned-note">
+        Reserved for a future <strong>Postgres component registry</strong> (logical component/device rows and flags in the
+        control-plane DB). That is separate from <strong>persistency backends</strong> (Postgres/SQLite adapters, tables,
+        <code>persistency.*</code> in execution-runtime YAML), which stay in worker config. Submitting the form still
+        returns <strong>501</strong> until the registry API exists.
+      </p>
       <form id="form-da-device" class="form-da">
         <label class="form-label">Device ID <span class="muted">(slug, lowercase)</span></label>
         <input name="device_id" id="da-device-id" placeholder="e.g. polygon-live, ibkr-paper-1" required autocomplete="off" />
@@ -130,41 +141,112 @@
     </section>
 
     <section id="panel-rmq-traffic" class="panel">
-      <h2>Message bus — live traffic</h2>
+      <h2>Message bus — topic tap</h2>
       <p class="muted">
-        Near real-time rates and depths via the broker <strong>management HTTP API</strong> (e.g. RabbitMQ management
-        plugin when AMQP is the backend). Default URL is derived from <code>MESSAGE_BUS_URL</code> or
-        <code>RABBITMQ_URL</code> with port <code>15672</code>; override with <code>MESSAGE_BUS_MANAGEMENT_URL</code>
-        or <code>RABBITMQ_MANAGEMENT_URL</code> if needed. Select queues/exchanges below, then enable auto-refresh.
+        Inspect JSON on a <strong>topic</strong> (routing key) via a dedicated tap queue and WebSocket. For full
+        queues, exchanges, and bindings use the <strong>RabbitMQ</strong> tab (management UI). One-line cluster summary
+        below is from the broker overview API.
       </p>
-      <div id="rmq-overview" class="muted" aria-live="polite"></div>
-      <div class="scheduler-controls">
-        <label class="form-label" style="display:flex;align-items:center;gap:.35rem">
-          <input type="checkbox" id="rmq-live" />
-          Auto-refresh every 2s
+      <h3>Topic tap — read JSON payloads</h3>
+      <p class="muted" id="rmq-tap-meta">
+        Loading exchange / routing key…
+      </p>
+      <div class="scheduler-controls" style="flex-wrap: wrap; align-items: flex-end; gap: 0.5rem">
+        <label class="form-label"
+          >Topic
+          <select
+            id="rmq-tap-topic-preset"
+            class="scheduler-select"
+            style="min-width: 18rem; max-width: 100%"
+            aria-label="Topic presets: broker bindings plus known system topics"
+          >
+            <option value="">Custom (type routing key below)</option>
+          </select>
         </label>
-        <button type="button" id="btn-rmq-refresh" class="scheduler-exec">Refresh now</button>
+        <label class="form-label"
+          >Routing key (topic)
+          <input type="text" id="rmq-tap-rk" style="min-width: 18rem" autocomplete="off" spellcheck="false"
+        /></label>
+        <button type="button" id="btn-rmq-tap-start" class="scheduler-exec">Activate tap</button>
+        <button type="button" id="btn-rmq-tap-stop" class="scheduler-exec" disabled>Stop tap</button>
+        <button type="button" id="btn-rmq-tap-clear" class="scheduler-exec">Clear buffer</button>
+        <button type="button" id="btn-rmq-tap-copy-payloads" class="scheduler-exec" title="Copy payload field only for all rows (newline-separated JSON blocks)">
+          Copy all payloads
+        </button>
       </div>
-      <div id="rmq-picks" class="rmq-picks">
-        <div class="rmq-picks-col">
-          <h4>Queues to show</h4>
-          <div id="rmq-queue-cbs" class="rmq-cb-grid muted">Loading…</div>
-        </div>
-        <div class="rmq-picks-col">
-          <h4>Exchanges to show</h4>
-          <div id="rmq-exchange-cbs" class="rmq-cb-grid muted">Loading…</div>
+      <p id="rmq-tap-status" class="muted" aria-live="polite"></p>
+      <div
+        id="rmq-tap-tabs"
+        class="rmq-tap-tabs muted"
+        style="display:flex;flex-wrap:wrap;gap:.5rem;margin:.25rem 0 .75rem 0"
+        aria-live="polite"
+      ></div>
+      <div id="rmq-tap-buffer-wrap" class="rmq-tap-buffer-wrap">
+        <div class="rmq-tap-table-scroll" aria-live="polite">
+          <table class="st-task-table rmq-tap-msg-table">
+            <thead>
+              <tr>
+                <th class="rmq-tap-th-idx">#</th>
+                <th class="rmq-tap-th-received">Received</th>
+                <th class="rmq-tap-th-data">Data</th>
+                <th class="rmq-tap-th-actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="rmq-tap-tbody">
+              <tr class="rmq-tap-empty-row">
+                <td colspan="4" class="muted">No messages yet — activate a tap and stream over WebSocket.</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
-      <p id="rmq-status" class="muted" aria-live="polite"></p>
-      <h3>Queues</h3>
-      <div id="rmq-queues-table" class="rmq-table-wrap"></div>
-      <h3>Exchanges</h3>
-      <div id="rmq-exchanges-table" class="rmq-table-wrap"></div>
+      <div id="rmq-overview" class="muted" aria-live="polite"></div>
+      <p class="muted" style="margin: 0.35rem 0 0; font-size: 0.8rem">
+        Messages stream over <strong>WebSocket</strong> after <strong>Activate tap</strong>.
+      </p>
+    </section>
+
+    <section id="panel-rabbitmq-management" class="panel">
+      <h2>RabbitMQ management</h2>
+      <p class="muted">
+        Opens the broker <strong>management plugin</strong> (port <code>15672</code> by default). Use the same URL your
+        <em>browser</em> can reach (often <code>http://localhost:15672</code>). Set
+        <code>ui.public_rabbitmq_management_url</code> on the <strong>Settings</strong> tab as JSON
+        <code>{"value":"http://host:15672"}</code>, or set <code>PUBLIC_RABBITMQ_MANAGEMENT_URL</code> on control-plane
+        and restart. If the frame is blank or blocked, use <strong>Open RabbitMQ</strong>.
+      </p>
+      <p id="rabbitmq-embed-status" class="muted grafana-embed-status" aria-live="polite"></p>
+      <p class="grafana-embed-bar">
+        <a
+          id="rabbitmq-open-external"
+          class="btn-grafana-open"
+          href="#"
+          target="_blank"
+          rel="noopener noreferrer"
+          hidden
+          >Open RabbitMQ</a
+        >
+      </p>
+      <iframe
+        id="rabbitmq-frame"
+        title="RabbitMQ management"
+        sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+      ></iframe>
     </section>
 
     <section id="panel-settings" class="panel">
       <h2>Database settings</h2>
       <p class="muted">Non-secret keys only. Values are JSON objects (e.g. <code>{"value": "..."}</code>).</p>
+      <p class="muted">
+        <strong>Export / import YAML</strong> — download the current settings as <code>nelson-control-plane-settings.yaml</code> for other Docker hosts;
+        import applies the same file (merge <code>settings</code> into a larger execution-runtime IoC file by hand if needed). Keys that look like secrets are redacted on export.
+      </p>
+      <p class="scheduler-controls">
+        <button type="button" id="btn-settings-export-yaml" class="scheduler-exec">Export settings YAML</button>
+        <input type="file" id="input-settings-import-yaml" accept=".yaml,.yml,text/yaml,application/x-yaml,text/plain" hidden />
+        <button type="button" id="btn-settings-import-yaml" class="scheduler-exec">Import settings YAML…</button>
+      </p>
+      <p id="settings-yaml-status" class="muted" aria-live="polite"></p>
       <div id="settings-list"></div>
       <h3>Message bus (topic)</h3>
       <p class="muted">
@@ -202,26 +284,61 @@
     </section>
   </main>
 
-  <dialog id="dialog-manifest" class="manifest-dialog" aria-labelledby="dialog-manifest-title">
+  <dialog id="dialog-extension-config" class="manifest-dialog manifest-dialog--wide" aria-labelledby="dialog-extension-config-title">
     <div class="manifest-dialog-inner">
-      <h3 id="dialog-manifest-title" class="manifest-dialog-title">Extension manifest</h3>
-      <pre id="dialog-manifest-pre" class="manifest-pre" tabindex="0">Loading…</pre>
+      <h3 id="dialog-extension-config-title" class="manifest-dialog-title">Configuration</h3>
+      <div class="ioc-tab-bar" role="tablist" aria-label="Extension configuration">
+        <button type="button" role="tab" class="ioc-tab ioc-tab--active" data-ext-config-tab="effective" id="ext-config-tab-effective" aria-selected="true" aria-controls="ext-config-panel-effective">Effective</button>
+        <button type="button" role="tab" class="ioc-tab" data-ext-config-tab="documentation" id="ext-config-tab-documentation" aria-selected="false" aria-controls="ext-config-panel-documentation">Documentation</button>
+        <button type="button" role="tab" class="ioc-tab" data-ext-config-tab="manifest" id="ext-config-tab-manifest" aria-selected="false" aria-controls="ext-config-panel-manifest">Manifest</button>
+      </div>
+      <div id="ext-config-panel-effective" class="ioc-panel" role="tabpanel" aria-labelledby="ext-config-tab-effective">
+        <p class="muted ext-config-panel-hint">
+          Resolved <code>extensions.*</code> YAML from the worker (read-only). If the worker is unreachable, this tab shows
+          manifest default routing keys instead. To change persistency or routing, edit execution-runtime YAML and restart.
+        </p>
+        <div id="ext-config-effective-meta" class="ioc-effective-meta muted"></div>
+        <pre id="ext-config-effective-pre" class="manifest-pre" tabindex="0">Loading…</pre>
+      </div>
+      <div id="ext-config-panel-documentation" class="ioc-panel" role="tabpanel" aria-labelledby="ext-config-tab-documentation" hidden>
+        <p class="muted ext-config-panel-hint">IoC schema: keys, env sources, related YAML blocks (from engineering-lab).</p>
+        <pre id="ext-config-doc-pre" class="manifest-pre" tabindex="0"></pre>
+      </div>
+      <div id="ext-config-panel-manifest" class="ioc-panel" role="tabpanel" aria-labelledby="ext-config-tab-manifest" hidden>
+        <p class="muted ext-config-panel-hint">
+          Persistency contract, entities, and default subscribe/publish routing keys from the extension manifest.
+          Effective routing overrides live under <code>extensions.&lt;section&gt;</code> in execution-runtime YAML (see Effective tab).
+        </p>
+        <div id="ext-config-manifest-body" class="manifest-structured"></div>
+        <details class="manifest-raw-details">
+          <summary>Raw manifest JSON (advanced)</summary>
+          <pre id="ext-config-manifest-raw-pre" class="manifest-pre" tabindex="0"></pre>
+        </details>
+      </div>
+      <div id="ext-config-provision-wrap" class="ext-config-provision-wrap" hidden>
+        <p id="ext-config-provision-hint" class="muted ext-config-panel-hint"></p>
+        <button type="button" class="btn-st-provision" id="btn-ext-config-provision">Prepare DB</button>
+      </div>
       <div class="manifest-dialog-actions">
-        <button type="button" class="btn-manifest-close" id="btn-manifest-close">Close</button>
+        <button type="button" class="btn-manifest-close" id="btn-extension-config-close">Close</button>
       </div>
     </div>
   </dialog>
 
-  <dialog id="dialog-ioc" class="manifest-dialog" aria-labelledby="dialog-ioc-title">
+  <dialog id="dialog-rmq-tap-json" class="manifest-dialog manifest-dialog--wide" aria-labelledby="dialog-rmq-tap-json-title">
     <div class="manifest-dialog-inner">
-      <h3 id="dialog-ioc-title" class="manifest-dialog-title">Extension IoC (effective YAML)</h3>
-      <pre id="dialog-ioc-pre" class="manifest-pre" tabindex="0">Loading…</pre>
+      <h3 id="dialog-rmq-tap-json-title" class="manifest-dialog-title">Message (full JSON)</h3>
+      <pre id="rmq-tap-json-pre" class="manifest-pre rmq-tap-json-pre" tabindex="0"></pre>
       <div class="manifest-dialog-actions">
-        <button type="button" class="btn-manifest-close" id="btn-ioc-close">Close</button>
+        <button type="button" class="btn-manifest-close" id="btn-rmq-tap-json-close">Close</button>
       </div>
     </div>
   </dialog>
 
-  <script src="/assets/app.js?v=44" defer></script>
+  <!-- Cached app.js may still reference prepareDbBtn in scheduler row templates; define before deferred bundle. -->
+  <script>
+    var prepareDbBtn = "";
+  </script>
+  <script src="/assets/app.js?v=79" defer></script>
 </body>
 </html>
