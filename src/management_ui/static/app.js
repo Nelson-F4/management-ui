@@ -1,5 +1,5 @@
 /** Bumped with index.html `?v=` and `<meta name="nelson4-management-ui-build">` — if this log mismatches DevTools Network, you are not serving this package build. */
-console.info("[operator UI] static build v=70");
+console.info("[operator UI] static build v=100");
 /** Scheduler rows no longer use this; kept so any cached bundle that still interpolates `${prepareDbBtn}` does not throw. */
 var prepareDbBtn = "";
 
@@ -9,7 +9,11 @@ async function fetchJSON(url, opts) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 20000);
   try {
-    const r = await fetch(url, { ...opts, signal: ctrl.signal });
+    const r = await fetch(url, {
+      cache: "no-store",
+      ...opts,
+      signal: ctrl.signal,
+    });
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   } finally {
@@ -73,8 +77,10 @@ function formatFrequencyHuman(sec) {
 const CHECK_LABELS = {
   postgres: "PostgreSQL (database connectivity)",
   message_bus: "RabbitMQ (AMQP connectivity)",
-  scheduler: "Scheduler (market hours)",
+  scheduler: "Scheduler (control-plane periodic loop)",
   management_api: "Management API",
+  extension_trading_broker: "Trading broker (worker extension probe)",
+  extension_market_strategy: "Market strategy (worker extension probe)",
 };
 
 function overallLabel(status) {
@@ -117,7 +123,14 @@ function formatHealthTime(iso) {
 }
 
 /** Stable order; old APIs may omit `scheduler` — we inject a fallback row. */
-const HEALTH_CHECK_ORDER = ["postgres", "message_bus", "scheduler", "management_api"];
+const HEALTH_CHECK_ORDER = [
+  "postgres",
+  "message_bus",
+  "scheduler",
+  "management_api",
+  "extension_trading_broker",
+  "extension_market_strategy",
+];
 
 function renderCheckItems(checks) {
   const c = { ...(checks || {}) };
@@ -132,34 +145,48 @@ function renderCheckItems(checks) {
   return HEALTH_CHECK_ORDER.filter((k) => c[k] != null)
     .map((key) => {
       const v = c[key];
-      const ok = v && v.ok;
+      const ok = Boolean(v && v.ok === true);
+      const failed = Boolean(v && v.ok === false);
+      /** API uses ``ok: null`` + optional ``skipped`` when a probe is disabled or not applicable. */
+      const skipped = Boolean(v && v.ok !== true && v.ok !== false);
       const err = v && v.error;
       const label = CHECK_LABELS[key] || key.replace(/_/g, " ");
-      const state = ok ? "up" : "down";
+      const state = ok ? "up" : skipped ? "skip" : "down";
       const pill = ok
         ? '<span class="health-status-pill ok">OK</span>'
-        : '<span class="health-status-pill bad">FAIL</span>';
+        : skipped
+          ? '<span class="health-status-pill skip">N/A</span>'
+          : '<span class="health-status-pill bad">FAIL</span>';
 
       let extraRight = "";
       if (key === "scheduler") {
         const t = formatHealthTime(v && v.last_tick_at);
         const phase = v && v.last_phase;
+        const tc = v && v.task_count != null ? Number(v.task_count) : null;
+        const tasksPart =
+          tc !== null && Number.isFinite(tc)
+            ? `<span class="muted">${escapeHtml(String(tc))} task(s) configured</span>`
+            : "";
         if (ok) {
           const timePart = t
-            ? `<span class="health-last-meta">Last trigger: <strong>${escapeHtml(t)}</strong></span>`
-            : `<span class="health-last-meta muted">Last trigger: <strong>never</strong></span>`;
+            ? `<span class="health-last-meta">Loop heartbeat: <strong>${escapeHtml(t)}</strong></span>`
+            : `<span class="health-last-meta muted">Loop heartbeat: <strong>pending</strong></span>`;
           const phasePart =
             phase != null && phase !== ""
               ? `<span class="health-phase muted">(${escapeHtml(String(phase))})</span>`
               : "";
-          extraRight = `<span class="health-scheduler-extra">${timePart}${phasePart}</span>`;
+          extraRight = `<span class="health-scheduler-extra">${timePart}${tasksPart ? ` · ${tasksPart}` : ""}${phasePart}</span>`;
         }
       }
 
+      if (key.startsWith("extension_") && v && v.detail) {
+        extraRight = `<span class="health-last-meta${skipped ? " muted" : ""}">${escapeHtml(
+          String(v.detail),
+        )}</span>`;
+      }
+
       const errLine =
-        !ok && err
-          ? `<div class="health-check-error">${escapeHtml(err)}</div>`
-          : "";
+        failed && err ? `<div class="health-check-error">${escapeHtml(err)}</div>` : "";
 
       return `<li class="health-check-row ${state}">
         <span class="health-led" aria-hidden="true"></span>
@@ -252,11 +279,18 @@ function renderSchedulerRow(c, sched) {
 }
 
 function renderRegistryRow(c) {
+  const catalog = String(c.registry_display || "").toLowerCase() === "catalog";
   const enabled = !!c.enabled;
-  const stateClass = enabled ? "up" : "registry-component--disabled";
-  const pill = enabled
-    ? '<span class="health-status-pill ok">Enabled</span>'
-    : '<span class="health-status-pill bad">Disabled</span>';
+  const stateClass = catalog
+    ? "registry-component--catalog"
+    : enabled
+      ? "up"
+      : "registry-component--disabled";
+  const pill = catalog
+    ? '<span class="health-status-pill skip">Catalog</span>'
+    : enabled
+      ? '<span class="health-status-pill ok">Enabled</span>'
+      : '<span class="health-status-pill bad">Disabled</span>';
   const phase = String(c.phase || "").replace(/_/g, " ");
   const impl = String(c.implementation_label || "").trim();
   const pkg = String(c.implementation_package || "").trim();
@@ -341,13 +375,17 @@ async function loadComponents() {
       return;
     }
     const rows = filtered.map((c) => renderRegistryRow(c)).join("");
+    const note =
+      data && data.note
+        ? `<p class="muted component-catalog-note" role="note">${escapeHtml(String(data.note))}</p>`
+        : "";
     const banner =
       data && data.registry_error
         ? `<p class="component-api-banner" role="status">Registry list partial: ${escapeHtml(
             String(data.registry_error)
           )}</p>`
         : "";
-    el.innerHTML = `${banner}<ul class="health-check-list registry-component-list" role="list">${rows}</ul>`;
+    el.innerHTML = `${note}${banner}<ul class="health-check-list registry-component-list" role="list">${rows}</ul>`;
   };
   try {
     const data = await fetchJSON("/api/v1/components");
@@ -404,6 +442,717 @@ function escapeAttr(s) {
     .replace(/&/g, "&amp;")
     .replace(/"/g, "&quot;")
     .replace(/</g, "&lt;");
+}
+
+/** Last successful trading-desk summary (probe); used to redraw live positions without re-parsing the pre). */
+let _lastTradingDeskSummary = null;
+
+/** ``setInterval`` id for Trading desk persistence auto-refresh (cleared when leaving tab or disabling). */
+let _tdPersistIntervalHandle = null;
+
+/** In-memory store for trading-desk table JSON cells (large payloads only; small cells use data-json-b64). */
+const _tdJsonViewStore = new Map();
+let _tdJsonViewSeq = 0;
+
+/** Max JSON string length to embed as base64 on the button (avoids huge attributes). */
+const _TD_JSON_B64_MAX = 56000;
+
+function _tdJsonEncodeB64(obj) {
+  const s = JSON.stringify(obj);
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+function _tdJsonPayloadFromButton(btn) {
+  const b64 = btn.getAttribute("data-json-b64");
+  if (b64) {
+    try {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return JSON.parse(new TextDecoder().decode(bytes));
+    } catch (e) {
+      console.error("[operator UI] td-json-b64 decode failed", e);
+    }
+  }
+  const id = btn.getAttribute("data-json-id");
+  if (id != null) {
+    const p = _tdJsonViewStore.get(id);
+    if (p !== undefined) return p;
+  }
+  return undefined;
+}
+
+function ensureTdJsonViewDelegation() {
+  if (document.documentElement.dataset.tdJsonViewBound === "1") return;
+  document.documentElement.dataset.tdJsonViewBound = "1";
+  document.addEventListener(
+    "click",
+    (e) => {
+      const t = e.target;
+      const el = t && t.nodeType === Node.TEXT_NODE ? t.parentElement : t;
+      const btn = el && el.closest ? el.closest(".td-json-view-btn") : null;
+      if (!btn) return;
+      e.preventDefault();
+      const label = btn.getAttribute("data-json-label") || "JSON";
+      const payload = _tdJsonPayloadFromButton(btn);
+      if (payload === undefined) {
+        console.warn("[operator UI] View JSON: no payload (reload persistence or refresh table)");
+        return;
+      }
+      openTdJsonModal(label, payload);
+    },
+    true
+  );
+}
+
+function openTdJsonModal(title, payload) {
+  const dlg = $("#dialog-td-json");
+  const titleEl = $("#dialog-td-json-title");
+  const pre = $("#td-json-modal-pre");
+  if (!dlg || !pre) {
+    try {
+      alert(JSON.stringify(payload, null, 2));
+    } catch {
+      alert(String(payload));
+    }
+    return;
+  }
+  if (titleEl) titleEl.textContent = title || "JSON";
+  try {
+    pre.textContent = JSON.stringify(payload, null, 2);
+  } catch {
+    pre.textContent = String(payload);
+  }
+  try {
+    if (typeof dlg.showModal === "function") {
+      dlg.showModal();
+    } else {
+      dlg.setAttribute("open", "");
+    }
+  } catch (err) {
+    console.error("[operator UI] dialog showModal failed", err);
+    try {
+      alert(JSON.stringify(payload, null, 2));
+    } catch {
+      alert(String(payload));
+    }
+  }
+}
+
+function tdJsonViewCellHtml(value, columnKey) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" && value.trim() === "[object Object]") {
+    return '<span class="muted" title="Bad string in DB or old UI">(invalid object string)</span>';
+  }
+  if (typeof value === "object") {
+    const raw = JSON.stringify(value);
+    if (raw.length <= _TD_JSON_B64_MAX) {
+      const b64 = _tdJsonEncodeB64(value);
+      return `<button type="button" class="td-json-view-btn td-json-view-btn--primary" data-json-b64="${escapeAttr(
+        b64
+      )}" data-json-label="${escapeAttr(columnKey)}">View JSON</button>`;
+    }
+    const id = `tdjv-${++_tdJsonViewSeq}`;
+    _tdJsonViewStore.set(id, value);
+    return `<button type="button" class="td-json-view-btn td-json-view-btn--primary" data-json-id="${escapeAttr(
+      id
+    )}" data-json-label="${escapeAttr(columnKey)}">View JSON (large)</button>`;
+  }
+  if (typeof value === "string") {
+    const t = value.trim();
+    if (
+      (t.startsWith("{") && t.endsWith("}")) ||
+      (t.startsWith("[") && t.endsWith("]"))
+    ) {
+      try {
+        const parsed = JSON.parse(value);
+        const raw = JSON.stringify(parsed);
+        if (raw.length <= _TD_JSON_B64_MAX) {
+          const b64 = _tdJsonEncodeB64(parsed);
+          return `<button type="button" class="td-json-view-btn td-json-view-btn--primary" data-json-b64="${escapeAttr(
+            b64
+          )}" data-json-label="${escapeAttr(columnKey)}">View JSON</button>`;
+        }
+        const id = `tdjv-${++_tdJsonViewSeq}`;
+        _tdJsonViewStore.set(id, parsed);
+        return `<button type="button" class="td-json-view-btn td-json-view-btn--primary" data-json-id="${escapeAttr(
+          id
+        )}" data-json-label="${escapeAttr(columnKey)}">View JSON (large)</button>`;
+      } catch {
+        /* fall through */
+      }
+    }
+  }
+  return escapeHtml(String(value));
+}
+
+/**
+ * @param {object[]} rows
+ * @param {HTMLElement | null} containerEl
+ * @param {{ skipClear?: boolean, columnLabels?: Record<string, string> }} [options] When rendering two tables in one batch (orders + positions), pass skipClear on the second call after clearing once in the caller. Optional columnLabels overrides header text for matching row keys.
+ */
+function renderTradingDeskTable(rows, containerEl, options) {
+  if (!containerEl) return;
+  ensureTdJsonViewDelegation();
+  const skipClear = options && options.skipClear;
+  const columnLabels = options && options.columnLabels ? options.columnLabels : null;
+  if (!skipClear) {
+    _tdJsonViewStore.clear();
+    _tdJsonViewSeq = 0;
+  }
+  if (!rows || !rows.length) {
+    containerEl.innerHTML = "<p class=\"muted\">No rows.</p>";
+    containerEl.className = "td-table-wrap muted";
+    return;
+  }
+  containerEl.className = "td-table-wrap";
+  const keys = Object.keys(rows[0]);
+  let html =
+    '<table class="st-task-table"><thead><tr>' +
+    keys
+      .map((k) => {
+        const label = columnLabels && columnLabels[k] != null ? columnLabels[k] : k;
+        return `<th>${escapeHtml(String(label))}</th>`;
+      })
+      .join("") +
+    "</tr></thead><tbody>";
+  for (const row of rows) {
+    html +=
+      "<tr>" +
+      keys
+        .map((k) => `<td>${tdJsonViewCellHtml(row[k], k)}</td>`)
+        .join("") +
+      "</tr>";
+  }
+  html += "</tbody></table>";
+  containerEl.innerHTML = html;
+}
+
+function renderTradingDeskBrokerPositions(summary) {
+  const out = $("#td-broker-positions-out");
+  const sel = $("#td-account-id");
+  const manual = String($("#td-account-id-manual")?.value || "").trim();
+  if (!out) return;
+  const accountId = manual || String(sel?.value || "").trim();
+  const probe =
+    summary &&
+    summary.trading_broker_probe &&
+    summary.trading_broker_probe.trading_broker &&
+    summary.trading_broker_probe.trading_broker.tradestation_brokerage;
+  const byAccount = probe && probe.positions_by_account && typeof probe.positions_by_account === "object"
+    ? probe.positions_by_account
+    : {};
+  if (!accountId) {
+    out.className = "td-table-wrap muted";
+    out.innerHTML = "<p class=\"muted\">Choose an account to view live broker positions.</p>";
+    return;
+  }
+  const accountData = byAccount[accountId];
+  if (!accountData || !Array.isArray(accountData.positions)) {
+    out.className = "td-table-wrap muted";
+    out.innerHTML = `<p class="muted">No live positions returned for account <code>${escapeHtml(accountId)}</code>.</p>`;
+    return;
+  }
+  renderTradingDeskTable(accountData.positions, out, { skipClear: true });
+}
+
+function tradingDeskAccountOptionsFromSummary(summary) {
+  const probe = summary && summary.trading_broker_probe;
+  const rootCandidates = [
+    probe &&
+      probe.trading_broker &&
+      probe.trading_broker.tradestation_brokerage &&
+      probe.trading_broker.tradestation_brokerage.accounts,
+    probe && probe.tradestation_brokerage && probe.tradestation_brokerage.accounts,
+    summary &&
+      summary.trading_broker &&
+      summary.trading_broker.tradestation_brokerage &&
+      summary.trading_broker.tradestation_brokerage.accounts,
+    summary && summary.tradestation_brokerage && summary.tradestation_brokerage.accounts,
+  ];
+  const root = rootCandidates.find((x) => Array.isArray(x));
+  if (!Array.isArray(root)) return [];
+  return root
+    .filter((x) => x && typeof x === "object")
+    .map((x) => {
+      const accountId =
+        x.account_id != null && String(x.account_id).trim() !== ""
+          ? String(x.account_id).trim()
+          : x.AccountID != null && String(x.AccountID).trim() !== ""
+            ? String(x.AccountID).trim()
+          : "";
+      if (!accountId) return null;
+      const type = x.account_type != null ? String(x.account_type).trim() : "";
+      const alias = x.alias != null ? String(x.alias).trim() : "";
+      const status = x.status != null ? String(x.status).trim() : "";
+      const currency = x.currency != null ? String(x.currency).trim() : "";
+      const extras = [type, alias, status, currency].filter(Boolean).join(" | ");
+      return {
+        accountId,
+        accountType: type,
+        status,
+        label: extras ? `${accountId} — ${extras}` : accountId,
+      };
+    })
+    .filter(Boolean);
+}
+
+function populateTradingDeskAccountSelect(summary) {
+  const sel = $("#td-account-id");
+  const help = $("#td-account-help");
+  if (!sel) return;
+  const prev = String(sel.value || "").trim();
+  const opts = tradingDeskAccountOptionsFromSummary(summary);
+  if (!opts.length) {
+    sel.innerHTML =
+      '<option value="">No accounts from probe (enter manual AccountID below)</option>';
+    if (help) {
+      help.textContent =
+        "No brokerage accounts parsed from probe response. You can still enter AccountID manually.";
+    }
+    return;
+  }
+  sel.innerHTML = opts
+    .map((o) => `<option value="${escapeAttr(o.accountId)}">${escapeHtml(o.label)}</option>`)
+    .join("");
+  const hasPrev = opts.some((o) => o.accountId === prev);
+  if (hasPrev) {
+    sel.value = prev;
+  } else {
+    const preferred = opts.find(
+      (o) =>
+        String(o.status || "").toLowerCase() === "active" &&
+        String(o.accountType || "").toLowerCase() !== "futures"
+    );
+    sel.value = (preferred || opts[0]).accountId;
+  }
+  if (help) {
+    help.textContent = `Loaded ${opts.length} account(s). Each row shows AccountID and broker metadata (type, alias, status, currency).`;
+  }
+}
+
+function tradingDeskSummaryDataForRefresh() {
+  if (_lastTradingDeskSummary && typeof _lastTradingDeskSummary === "object") {
+    return _lastTradingDeskSummary;
+  }
+  const out = $("#td-summary-out");
+  if (!out) return null;
+  try {
+    return JSON.parse(out.textContent || "{}");
+  } catch {
+    return null;
+  }
+}
+
+async function loadTradingDeskSummary() {
+  const out = $("#td-summary-out");
+  const rk = $("#td-routing-key-out");
+  if (out) {
+    out.textContent = "Loading…";
+    out.className = "td-json-out";
+  }
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 60000);
+  try {
+    const r = await fetch("/api/v1/trading-desk/summary", {
+      signal: ctrl.signal,
+      cache: "no-store",
+    });
+    const text = await r.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = {};
+    }
+    if (!r.ok) {
+      if (out) {
+        out.textContent = formatApiErrorBody(data) || text || `HTTP ${r.status}`;
+        out.className = "td-json-out bad";
+      }
+      return;
+    }
+    _lastTradingDeskSummary = data;
+    if (rk) rk.textContent = data.place_order_routing_key || "(unknown)";
+    populateTradingDeskAccountSelect(data);
+    renderTradingDeskBrokerPositions(data);
+    if (out) {
+      out.className = "td-json-out";
+      out.textContent = JSON.stringify(data, null, 2);
+    }
+  } catch (e) {
+    if (out) {
+      const msg = e && e.name === "AbortError" ? "timeout (try again)" : e.message;
+      out.textContent = "Error: " + msg;
+      out.className = "td-json-out bad";
+    }
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function tradingDeskPersistenceLimit() {
+  const el = $("#td-persist-limit");
+  let n = parseInt(String(el?.value ?? "5"), 10);
+  if (Number.isNaN(n) || n < 1) n = 5;
+  if (n > 500) n = 500;
+  if (el) el.value = String(n);
+  return n;
+}
+
+function tradingDeskPersistenceOffset() {
+  const el = $("#td-persist-offset");
+  let n = parseInt(String(el?.value ?? "0"), 10);
+  if (Number.isNaN(n) || n < 0) n = 0;
+  if (n > 1000000) n = 1000000;
+  if (el) el.value = String(n);
+  return n;
+}
+
+function tradingDeskPersistencePollSeconds() {
+  const el = $("#td-persist-poll-sec");
+  let n = parseInt(String(el?.value ?? "10"), 10);
+  if (Number.isNaN(n) || n < 1) n = 10;
+  if (n > 3600) n = 3600;
+  if (el) el.value = String(n);
+  return n;
+}
+
+function stopTradingDeskPersistencePoll() {
+  if (_tdPersistIntervalHandle != null) {
+    clearInterval(_tdPersistIntervalHandle);
+    _tdPersistIntervalHandle = null;
+  }
+}
+
+/** Start auto-refresh when the Trading desk tab is active and the checkbox is on. */
+function startTradingDeskPersistencePoll() {
+  stopTradingDeskPersistencePoll();
+  const panel = $("#panel-trading-desk");
+  const auto = $("#td-persist-auto");
+  if (!panel || !panel.classList.contains("active")) return;
+  if (!auto || !auto.checked) return;
+  const sec = tradingDeskPersistencePollSeconds();
+  _tdPersistIntervalHandle = setInterval(() => {
+    void loadTradingDeskPersistence();
+  }, sec * 1000);
+}
+
+async function loadTradingDeskPersistence() {
+  const strategyEl = $("#td-strategy-orders-out");
+  const ordersEl = $("#td-orders-out");
+  const posEl = $("#td-positions-out");
+  const histEl = $("#td-position-history-out");
+  const metaEl = $("#td-persist-meta");
+  const lim = tradingDeskPersistenceLimit();
+  const off = tradingDeskPersistenceOffset();
+  if (strategyEl) strategyEl.textContent = "Loading…";
+  if (ordersEl) ordersEl.textContent = "Loading…";
+  if (posEl) posEl.textContent = "Loading…";
+  if (histEl) histEl.textContent = "Loading…";
+  if (metaEl) metaEl.textContent = "";
+  try {
+    const data = await fetchJSON(
+      `/api/v1/trading-desk/persistence?limit=${lim}&offset=${off}`
+    );
+    if (data && data.ok === false) {
+      const err =
+        (data.error && String(data.error)) ||
+        "Persistence query failed (see control-plane logs).";
+      const msg = `Error: ${err}`;
+      if (strategyEl) {
+        strategyEl.textContent = msg;
+        strategyEl.className = "td-table-wrap muted";
+      }
+      if (ordersEl) {
+        ordersEl.textContent = msg;
+        ordersEl.className = "td-table-wrap muted";
+      }
+      if (posEl) {
+        posEl.textContent = msg;
+        posEl.className = "td-table-wrap muted";
+      }
+      if (histEl) {
+        histEl.textContent = msg;
+        histEl.className = "td-table-wrap muted";
+      }
+      return;
+    }
+    _tdJsonViewStore.clear();
+    _tdJsonViewSeq = 0;
+    const strat = Array.isArray(data.strategy_order_requests) ? data.strategy_order_requests : [];
+    renderTradingDeskTable(strat, strategyEl, { skipClear: false });
+    renderTradingDeskTable(data.orders || [], ordersEl, { skipClear: true });
+    renderTradingDeskTable(data.positions || [], posEl, { skipClear: true });
+    const hist = Array.isArray(data.position_history) ? data.position_history : [];
+    renderTradingDeskTable(hist, histEl, { skipClear: true });
+    const pg = data.paging;
+    if (metaEl && pg && pg.totals && typeof pg.totals === "object") {
+      const t = pg.totals;
+      const fmt = (k) =>
+        typeof t[k] === "number" ? String(t[k]) : "—";
+      metaEl.textContent =
+        `limit ${lim}, offset ${off} · row totals — strategy ${fmt("strategy_order_requests")}, ` +
+        `orders ${fmt("orders")}, positions ${fmt("positions")}, history ${fmt("position_history")}`;
+    }
+  } catch (e) {
+    const msg = "Error: " + e.message;
+    if (strategyEl) {
+      strategyEl.textContent = msg;
+      strategyEl.className = "td-table-wrap muted";
+    }
+    if (ordersEl) {
+      ordersEl.textContent = msg;
+      ordersEl.className = "td-table-wrap muted";
+    }
+    if (posEl) {
+      posEl.textContent = msg;
+      posEl.className = "td-table-wrap muted";
+    }
+    if (histEl) {
+      histEl.textContent = msg;
+      histEl.className = "td-table-wrap muted";
+    }
+  }
+}
+
+function stockHistoryLimit() {
+  const el = $("#sh-limit");
+  let n = parseInt(String(el?.value ?? "50"), 10);
+  if (Number.isNaN(n) || n < 1) n = 50;
+  if (n > 500) n = 500;
+  if (el) el.value = String(n);
+  return n;
+}
+
+/**
+ * Derive stock-history table columns from event detail JSON (only non-empty when a matching field exists).
+ * @param {unknown} detail
+ * @returns {{ position: string, quantity: string, status: string }}
+ */
+function stockHistoryDerivedFromDetail(detail) {
+  const empty = { position: "", quantity: "", status: "" };
+  if (!detail || typeof detail !== "object") return empty;
+  const d = /** @type {Record<string, unknown>} */ (detail);
+
+  let position = "";
+  if (d.long_short != null && String(d.long_short).trim() !== "") {
+    position = String(d.long_short);
+  } else if (d.side != null && String(d.side).trim() !== "") {
+    position = String(d.side);
+  } else if (d.position != null && String(d.position).trim() !== "") {
+    position = String(d.position);
+  } else if (d.trade_action != null && String(d.trade_action).trim() !== "") {
+    position = String(d.trade_action);
+  }
+
+  let quantity = "";
+  if (d.quantity != null && d.quantity !== "") {
+    quantity = String(d.quantity);
+  } else {
+    const req = d.quantity_requested;
+    const fil = d.quantity_filled;
+    const hasReq = req != null && req !== "";
+    const hasFil = fil != null && fil !== "";
+    if (hasFil && hasReq) {
+      quantity = `${fil} / ${req}`;
+    } else if (hasFil) {
+      quantity = String(fil);
+    } else if (hasReq) {
+      quantity = String(req);
+    }
+  }
+
+  let status = "";
+  if (d.status != null && d.status !== "") {
+    status = String(d.status);
+  }
+
+  return { position, quantity, status };
+}
+
+async function loadStockHistoryCorrelationIds() {
+  const symEl = $("#sh-symbol");
+  const cidEl = $("#sh-correlation-id");
+  if (!cidEl) return;
+  const previous = String(cidEl.value || "").trim();
+  cidEl.innerHTML = '<option value="">— (any)</option>';
+  const sym = String(symEl?.value || "").trim().toUpperCase();
+  if (!sym) {
+    return;
+  }
+  cidEl.disabled = true;
+  try {
+    const params = new URLSearchParams({ symbol: sym });
+    const data = await fetchJSON(`/api/v1/trading-desk/stock-history/correlation-ids?${params}`);
+    if (!data || data.ok !== true || !Array.isArray(data.correlation_ids)) {
+      return;
+    }
+    for (const id of data.correlation_ids) {
+      const o = document.createElement("option");
+      o.value = String(id);
+      o.textContent = String(id);
+      cidEl.appendChild(o);
+    }
+    if (previous && [...cidEl.options].some((op) => op.value === previous)) {
+      cidEl.value = previous;
+    }
+  } catch {
+    /* keep — (any) only */
+  } finally {
+    cidEl.disabled = false;
+  }
+}
+
+async function loadStockHistorySymbols() {
+  const sel = $("#sh-symbol");
+  if (!sel) return;
+  sel.innerHTML = '<option value="">—</option>';
+  try {
+    const data = await fetchJSON("/api/v1/trading-desk/stock-history/symbols");
+    if (!data || data.ok !== true || !Array.isArray(data.symbols)) {
+      sel.innerHTML = '<option value="">(no symbols in DB)</option>';
+      void loadStockHistoryCorrelationIds();
+      return;
+    }
+    for (const s of data.symbols) {
+      const o = document.createElement("option");
+      o.value = String(s);
+      o.textContent = String(s);
+      sel.appendChild(o);
+    }
+  } catch {
+    sel.innerHTML = '<option value="">(failed to load symbols)</option>';
+  }
+  void loadStockHistoryCorrelationIds();
+}
+
+async function loadStockHistory() {
+  const out = $("#sh-out");
+  const meta = $("#sh-meta");
+  const sym = String($("#sh-symbol")?.value || "").trim().toUpperCase();
+  if (!sym) {
+    if (out) {
+      out.className = "td-table-wrap muted";
+      out.textContent = "Choose a symbol from the list.";
+    }
+    return;
+  }
+  const cid = String($("#sh-correlation-id")?.value || "").trim();
+  const lim = stockHistoryLimit();
+  if (out) {
+    out.textContent = "Loading…";
+    out.className = "td-table-wrap muted";
+  }
+  if (meta) meta.textContent = "";
+  const params = new URLSearchParams({ symbol: sym, limit: String(lim) });
+  if (cid) params.set("correlation_id", cid);
+  try {
+    const data = await fetchJSON(`/api/v1/trading-desk/stock-history?${params}`);
+    if (!data || data.ok !== true) {
+      const err = (data && data.error) || "Request failed";
+      if (out) {
+        out.className = "td-table-wrap muted";
+        out.textContent = "Error: " + err;
+      }
+      return;
+    }
+    const evs = Array.isArray(data.events) ? data.events : [];
+    const rows = evs.map((ev) => {
+      const derived = stockHistoryDerivedFromDetail(ev.detail);
+      return {
+        event_time: ev.event_time,
+        event_type: ev.event_type,
+        position: derived.position,
+        quantity: derived.quantity,
+        status: derived.status,
+        correlation_id: ev.correlation_id != null && ev.correlation_id !== "" ? ev.correlation_id : "—",
+        source_id: ev.source_id,
+        detail: ev.detail != null ? JSON.stringify(ev.detail) : "",
+      };
+    });
+    if (meta) {
+      meta.textContent =
+        `total=${data.total != null ? data.total : rows.length} · symbol=${sym}` +
+        (cid ? ` · correlation_id=${cid}` : " · latest activity (no correlation filter)");
+    }
+    renderTradingDeskTable(rows, out, {
+      skipClear: false,
+      columnLabels: {
+        position: "Position",
+        quantity: "Quantity",
+        status: "Status",
+      },
+    });
+  } catch (e) {
+    if (out) {
+      out.className = "td-table-wrap muted";
+      out.textContent = "Error: " + e.message;
+    }
+  }
+}
+
+function tradingDeskResolvedAccountId() {
+  const sel = $("#td-account-id");
+  const manual = String($("#td-account-id-manual")?.value || "").trim();
+  const selected = String(sel?.value || "").trim();
+  return manual || selected || "";
+}
+
+async function loadTradingDeskReconcile() {
+  const out = $("#td-reconcile-out");
+  const accountId = tradingDeskResolvedAccountId();
+  if (!accountId) {
+    if (out) {
+      out.className = "td-json-out bad";
+      out.textContent = "Select or enter an Account ID first.";
+    }
+    return;
+  }
+  const params = new URLSearchParams({
+    account_id: accountId,
+    execution_environment: "SIM",
+  });
+  if (out) {
+    out.textContent = "Reconciling… (TradeStation + Postgres)";
+    out.className = "td-json-out";
+  }
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 120000);
+  try {
+    const r = await fetch(`/api/v1/trading-desk/reconcile?${params}`, {
+      method: "POST",
+      cache: "no-store",
+      signal: ctrl.signal,
+      headers: { "Content-Type": "application/json" },
+    });
+    const text = await r.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = {};
+    }
+    if (out) {
+      const bad = data.ok === false;
+      out.className = bad ? "td-json-out bad" : "td-json-out";
+      out.textContent = JSON.stringify(data, null, 2);
+    }
+    if (data && data.ok === true) {
+      void loadTradingDeskPersistence();
+    }
+  } catch (e) {
+    if (out) {
+      const msg = e && e.name === "AbortError" ? "timeout (try again)" : e.message;
+      out.textContent = "Error: " + msg;
+      out.className = "td-json-out bad";
+    }
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 /** Extensions YAML section name activated by this bus topic (for the Tasks table). */
@@ -801,7 +1550,8 @@ loadHealth();
 loadComponents();
 loadSchedulerManagement();
 loadSettings();
-setInterval(loadHealth, 10000);
+// Detailed health hits execution-runtime extension probes; keep interval moderate (see control-plane scoped probes).
+setInterval(loadHealth, 60000);
 
 const btnReload = $("#btn-reload");
 if (btnReload) {
@@ -989,6 +1739,9 @@ const RMQ_TAP_SYSTEM_TOPICS = [
   "data.calendar.request",
   "model.trigger",
   "data.livefeed.equity_quote",
+  "execution.trading_broker.place_order.command.v1",
+  "execution.trading_broker.place_order.response.v1",
+  "execution.trading_broker.order_lifecycle.v1",
 ];
 
 /** SVG: code / full JSON (Lucide-style). */
@@ -1440,6 +2193,10 @@ $("#btn-rmq-tap-json-close")?.addEventListener("click", () => {
   $("#dialog-rmq-tap-json")?.close();
 });
 
+$("#btn-td-json-close")?.addEventListener("click", () => {
+  $("#dialog-td-json")?.close();
+});
+
 $("#rmq-tap-buffer-wrap")?.addEventListener("click", async (ev) => {
   const jsonBtn = ev.target.closest("button[data-rmq-json]");
   if (jsonBtn) {
@@ -1497,6 +2254,16 @@ document.querySelectorAll(".tab").forEach((btn) => {
       loadSchedulerManagement();
       loadSchedulerTasks();
     }
+    if (btn.dataset.tab === "trading-desk") {
+      void loadTradingDeskSummary();
+      void loadTradingDeskPersistence();
+      startTradingDeskPersistencePoll();
+    } else {
+      stopTradingDeskPersistencePoll();
+    }
+    if (btn.dataset.tab === "stock-history") {
+      void loadStockHistorySymbols();
+    }
     if (btn.dataset.tab === "rmq-traffic") {
       if (!mbusCatalogLoaded) {
         mbusCatalogLoaded = true;
@@ -1509,6 +2276,168 @@ document.querySelectorAll(".tab").forEach((btn) => {
 $("#btn-da-readiness")?.addEventListener("click", () => {
   loadDaReadiness();
 });
+
+$("#btn-td-summary")?.addEventListener("click", () => {
+  void loadTradingDeskSummary();
+});
+
+$("#btn-td-live-positions-probe")?.addEventListener("click", () => {
+  void loadTradingDeskSummary();
+});
+
+$("#btn-td-live-positions-redraw")?.addEventListener("click", () => {
+  const data = tradingDeskSummaryDataForRefresh();
+  if (data) {
+    renderTradingDeskBrokerPositions(data);
+  } else {
+    const wrap = $("#td-broker-positions-out");
+    if (wrap) {
+      wrap.className = "td-table-wrap muted";
+      wrap.innerHTML =
+        '<p class="muted">No cached probe yet. Use <strong>Refresh broker</strong> or <strong>Refresh live positions (probe)</strong> first.</p>';
+    }
+  }
+});
+
+$("#td-account-id")?.addEventListener("change", () => {
+  const data = tradingDeskSummaryDataForRefresh();
+  if (data) renderTradingDeskBrokerPositions(data);
+});
+
+$("#td-account-id-manual")?.addEventListener("input", () => {
+  const data = tradingDeskSummaryDataForRefresh();
+  if (data) renderTradingDeskBrokerPositions(data);
+});
+
+$("#btn-td-probe-toggle")?.addEventListener("click", () => {
+  const btn = $("#btn-td-probe-toggle");
+  const wrap = $("#td-probe-wrap");
+  if (!btn || !wrap) return;
+  const open = wrap.hidden === false;
+  wrap.hidden = open;
+  btn.textContent = open ? "Show probe details" : "Hide probe details";
+  btn.setAttribute("aria-expanded", open ? "false" : "true");
+});
+
+$("#btn-td-persistence")?.addEventListener("click", () => {
+  void loadTradingDeskPersistence();
+});
+
+$("#btn-sh-load")?.addEventListener("click", () => {
+  void loadStockHistory();
+});
+
+$("#sh-symbol")?.addEventListener("change", () => {
+  void loadStockHistoryCorrelationIds();
+});
+
+$("#btn-td-persist-prev")?.addEventListener("click", () => {
+  const lim = tradingDeskPersistenceLimit();
+  const el = $("#td-persist-offset");
+  if (!el) return;
+  let n = parseInt(String(el.value ?? "0"), 10);
+  if (Number.isNaN(n) || n < 0) n = 0;
+  n = Math.max(0, n - lim);
+  el.value = String(n);
+  void loadTradingDeskPersistence();
+});
+
+$("#btn-td-persist-next")?.addEventListener("click", () => {
+  const lim = tradingDeskPersistenceLimit();
+  const el = $("#td-persist-offset");
+  if (!el) return;
+  let n = parseInt(String(el.value ?? "0"), 10);
+  if (Number.isNaN(n) || n < 0) n = 0;
+  n = Math.min(1000000, n + lim);
+  el.value = String(n);
+  void loadTradingDeskPersistence();
+});
+
+$("#td-persist-offset")?.addEventListener("change", () => {
+  tradingDeskPersistenceOffset();
+});
+
+$("#td-persist-limit")?.addEventListener("change", () => {
+  const o = $("#td-persist-offset");
+  if (o) o.value = "0";
+  tradingDeskPersistenceLimit();
+});
+
+$("#td-persist-auto")?.addEventListener("change", () => {
+  startTradingDeskPersistencePoll();
+});
+
+$("#td-persist-poll-sec")?.addEventListener("change", () => {
+  tradingDeskPersistencePollSeconds();
+  startTradingDeskPersistencePoll();
+});
+
+$("#btn-td-reconcile")?.addEventListener("click", () => {
+  void loadTradingDeskReconcile();
+});
+
+const formTdPlace = $("#form-td-place-order");
+if (formTdPlace) {
+  formTdPlace.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const res = $("#td-place-result");
+    const fd = new FormData(ev.target);
+    const selectedAccount = String(fd.get("account_id") || "").trim();
+    const manualAccount = String($("#td-account-id-manual")?.value || "").trim();
+    const accountId = manualAccount || selectedAccount;
+    const body = {
+      account_id: accountId,
+      symbol: String(fd.get("symbol") || "MSFT").trim(),
+      quantity: parseInt(String(fd.get("quantity") || "1"), 10) || 1,
+      trade_action: String(fd.get("trade_action") || "BUY"),
+      tif: String(fd.get("tif") || "GTC"),
+      gtd_date: String(fd.get("gtd_date") || "").trim(),
+      omit_asset_type: fd.get("omit_asset_type") === "on",
+    };
+    if (!body.account_id) {
+      if (res) {
+        res.className = "da-register-result bad";
+        res.textContent = "Account ID required.";
+      }
+      return;
+    }
+    if (res) {
+      res.className = "da-register-result";
+      res.textContent = "Publishing…";
+    }
+    try {
+      const r = await fetch("/api/v1/trading-desk/place-order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const text = await r.text();
+      let data = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = {};
+      }
+      if (!r.ok) {
+        if (res) {
+          res.className = "da-register-result bad";
+          res.textContent = formatApiErrorBody(data) || text;
+        }
+        return;
+      }
+      if (res) {
+        res.className = data.ok ? "da-register-result ok" : "da-register-result bad";
+        res.textContent = JSON.stringify(data, null, 2);
+      }
+      if (data.ok) void loadTradingDeskPersistence();
+    } catch (e) {
+      if (res) {
+        res.className = "da-register-result bad";
+        res.textContent = "Error: " + e.message;
+      }
+    }
+  });
+}
 
 const formDa = $("#form-da-device");
 if (formDa) {

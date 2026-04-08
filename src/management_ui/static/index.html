@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- Operator UI (assets: management-ui package). Bump ?v= on styles.css and app.js together. ASSET_CACHE_BUST: v=79 -->
+<!-- Operator UI (assets: management-ui package). Bump ?v= on styles.css and app.js together. ASSET_CACHE_BUST: v=104 -->
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="nelson4-management-ui-build" content="45-tap-no-header-col" />
+  <meta name="nelson4-management-ui-build" content="103-stock-history-cids" />
   <title>Operator control</title>
   <link rel="icon" href="/assets/favicon.svg?v=1" type="image/svg+xml" />
   <style id="management-ui-critical">
@@ -20,7 +20,7 @@
     .st-interval-row input[type="number"]{min-width:9rem;padding:.45rem .55rem;border-radius:6px;border:1px solid #2f3336;background:#000;color:#e7e9ea;font-size:.85rem}
     .st-scheduler-notes ul.st-notes-list{margin:.35rem 0 .75rem 1.1rem;padding:0;font-size:.78rem;line-height:1.45;max-width:52rem}
   </style>
-  <link rel="stylesheet" href="/assets/styles.css?v=47" />
+  <link rel="stylesheet" href="/assets/styles.css?v=61" />
 </head>
 <body>
   <header class="top">
@@ -34,6 +34,8 @@
   <nav class="tabs">
     <button class="tab active" data-tab="dash">Dashboard</button>
     <button class="tab" data-tab="scheduler-tasks">Scheduler</button>
+    <button class="tab" data-tab="trading-desk">Trading desk</button>
+    <button class="tab" data-tab="stock-history">Stock history</button>
     <button class="tab" data-tab="data-acquisition">Data acquisition</button>
     <button class="tab" data-tab="rmq-traffic">Queue traffic</button>
     <button class="tab" data-tab="rabbitmq-management">RabbitMQ</button>
@@ -102,6 +104,223 @@
       <div id="st-tasks-out" class="st-tasks-out muted">Open this tab to load tasks.</div>
       <h3>Commands</h3>
       <div id="scheduler-management-out" class="scheduler-management-out">Loading…</div>
+    </section>
+
+    <section id="panel-trading-desk" class="panel">
+      <h2>
+        Trading desk
+        <span
+          id="operator-ui-build-fingerprint"
+          class="operator-ui-build-fingerprint"
+          title="Embedded in index.html; also in meta nelson4-management-ui-build. Rebuild control-plane image if this does not match your checkout."
+          > — build 103-stock-history-cids</span>
+      </h2>
+      <p class="muted">
+        Manual <strong>market</strong> equity orders go to RabbitMQ on the same routing key the execution-runtime
+        <code>trading_broker</code> consumer binds (default
+        <code>execution.trading_broker.place_order.command.v1</code>). Contracts live in
+        <code>runtime_contracts.management_ui_trading_desk</code>. <strong>Refresh broker</strong> calls the
+        execution-runtime probe (TradeStation HTTP): live accounts and <em>live</em> positions for the selected account.
+        <strong>Reload persistence</strong> reads <code>market_strategy_order_request</code> (strategy audit),
+        <code>broker_order</code>, <code>broker_position</code>, and <code>broker_position_history</code> (newest rows first; default 5 per table).
+      </p>
+
+      <details class="td-fold" open>
+        <summary class="td-fold-summary">Broker status &amp; live positions (probe)</summary>
+        <div class="td-fold-body">
+          <h3 class="td-fold-h">Broker status</h3>
+          <p class="muted">Effective place-order routing key (env override: <code>NELSON_BUS_TRADING_BROKER_PLACE_ORDER_ROUTING_KEY</code>):</p>
+          <pre id="td-routing-key-out" class="td-json-out muted" style="min-height: 1.5rem">—</pre>
+          <div class="scheduler-controls" style="margin: 0.5rem 0">
+            <button type="button" class="scheduler-exec" id="btn-td-summary">Refresh broker (execution-runtime probe)</button>
+            <button type="button" class="scheduler-exec" id="btn-td-probe-toggle" aria-expanded="false">Show probe details</button>
+            <span class="muted hint-inline">May take up to ~45s (TradeStation HTTP).</span>
+          </div>
+          <div id="td-probe-wrap" class="td-probe-wrap" hidden>
+            <pre id="td-summary-out" class="td-json-out" style="max-height: 22rem; overflow: auto">Open this tab or click Refresh broker.</pre>
+          </div>
+          <h4 class="td-fold-h">Positions — live API (probe)</h4>
+          <p class="muted" style="margin: 0 0 0.35rem; font-size: 0.82rem">
+            Current snapshot from TradeStation via the worker probe. Same source the UI uses to list accounts; not a DB query.
+          </p>
+          <div class="scheduler-controls" style="margin: 0.35rem 0">
+            <button type="button" class="scheduler-exec" id="btn-td-live-positions-probe">
+              Refresh live positions (probe)
+            </button>
+            <button type="button" class="scheduler-exec" id="btn-td-live-positions-redraw">
+              Redraw table (last probe, no HTTP)
+            </button>
+            <span class="muted hint-inline"
+              >Probe re-calls TradeStation (~45s), same as <strong>Refresh broker</strong>. Redraw only re-applies the account filter to the last successful probe.</span>
+          </div>
+          <div id="td-broker-positions-out" class="td-table-wrap muted">Refresh broker to load positions by account.</div>
+        </div>
+      </details>
+
+      <details class="td-fold">
+        <summary class="td-fold-summary">Manual place order</summary>
+        <div class="td-fold-body">
+          <form id="form-td-place-order" class="form-st">
+            <label class="form-label">Account ID</label>
+            <select name="account_id" id="td-account-id" class="scheduler-select" required>
+              <option value="">Refresh broker to load accounts…</option>
+            </select>
+            <input id="td-account-id-manual" placeholder="Manual AccountID (if not listed)" autocomplete="off" />
+            <p id="td-account-help" class="muted td-account-help">Use Refresh broker to load account type/status and pick one.</p>
+            <label class="form-label">Symbol</label>
+            <input name="symbol" id="td-symbol" value="MSFT" required autocomplete="off" />
+            <label class="form-label">Quantity</label>
+            <input name="quantity" id="td-qty" type="number" min="1" value="1" required />
+            <label class="form-label">Side</label>
+            <select name="trade_action" id="td-side" class="scheduler-select">
+              <option value="BUY">BUY</option>
+              <option value="SELL">SELL</option>
+            </select>
+            <label class="form-label">Time in force</label>
+            <select name="tif" id="td-tif" class="scheduler-select">
+              <option value="GTC">GTC</option>
+              <option value="DAY">DAY</option>
+              <option value="GTD">GTD</option>
+            </select>
+            <label class="form-label">GTD date (MM/DD/YYYY, if TIF is GTD)</label>
+            <input name="gtd_date" id="td-gtd" placeholder="optional" autocomplete="off" />
+            <label class="form-check"><input type="checkbox" name="omit_asset_type" id="td-omit-at" /> Omit asset_type (advanced)</label>
+            <button type="submit" class="btn-primary">Publish place-order command</button>
+          </form>
+          <div id="td-place-result" class="da-register-result" aria-live="polite"></div>
+        </div>
+      </details>
+
+      <details class="td-fold">
+        <summary class="td-fold-summary">Persisted Postgres (strategy → broker → positions)</summary>
+        <div class="td-fold-body">
+          <p class="muted">
+            Same DB as control-plane. Each table returns a page of the <strong>newest</strong> rows (by id / <code>updated_at</code> / <code>as_of</code>), with <code>limit</code> and <code>offset</code> query params.
+            JSON columns: <strong>View JSON</strong>. Static dev: merge <code>docker/docker-compose.ui-static-dev.yml</code> (broken bind hides <code>index.html</code>).
+          </p>
+          <div class="scheduler-controls td-persist-toolbar" style="margin: 0.35rem 0; flex-wrap: wrap; align-items: center">
+            <label class="td-persist-limit-label muted"
+              >Rows per table
+              <input
+                id="td-persist-limit"
+                name="td_persist_limit"
+                type="number"
+                min="1"
+                max="500"
+                value="5"
+                class="td-persist-limit-input"
+                title="Passed as ?limit= to /api/v1/trading-desk/persistence"
+              />
+            </label>
+            <label class="td-persist-limit-label muted"
+              >Offset
+              <input
+                id="td-persist-offset"
+                name="td_persist_offset"
+                type="number"
+                min="0"
+                max="1000000"
+                value="0"
+                class="td-persist-limit-input"
+                title="Passed as ?offset= (skip this many newest rows per table)"
+              />
+            </label>
+            <button type="button" class="scheduler-exec" id="btn-td-persist-prev" title="Decrease offset by page size">Prev</button>
+            <button type="button" class="scheduler-exec" id="btn-td-persist-next" title="Increase offset by page size">Next</button>
+            <button type="button" class="scheduler-exec" id="btn-td-persistence">Reload persistence</button>
+            <label class="td-persist-auto-wrap muted"
+              ><input type="checkbox" id="td-persist-auto" checked /> Auto-refresh</label>
+            <label class="td-persist-limit-label muted"
+              >every
+              <input
+                id="td-persist-poll-sec"
+                name="td_persist_poll_sec"
+                type="number"
+                min="1"
+                max="3600"
+                value="10"
+                class="td-persist-limit-input"
+                title="Seconds between automatic persistence reloads while this tab is open"
+              />
+              s</label>
+            <button type="button" class="scheduler-exec" id="btn-td-reconcile">Run reconciliation (live vs Postgres)</button>
+            <span class="muted hint-inline"
+              >Reconcile: TradeStation <code>get_positions</code> vs <code>broker_position</code>, then upsert (~90s).</span>
+          </div>
+          <p id="td-persist-meta" class="muted" style="font-size: 0.82rem; margin: 0.2rem 0 0.5rem"></p>
+          <details class="td-fold td-fold--nested">
+            <summary class="td-fold-summary">Reconciliation result (JSON)</summary>
+            <pre id="td-reconcile-out" class="td-json-out muted td-reconcile-pre">—</pre>
+          </details>
+
+          <details class="td-fold td-fold--nested">
+            <summary class="td-fold-summary">Strategy decisions — <code>market_strategy_order_request</code></summary>
+            <p class="muted" style="font-size: 0.82rem; max-width: 52rem; margin: 0.35rem 0">
+              One row per strategy publish. If you see <strong>more rows here than in broker orders</strong>, the strategy ran but the worker did not persist a broker row
+              (e.g. invalid <code>account_id</code>, TradeStation HTTP error/timeout, or consumer still processing). Align <code>TRADING_ACCOUNT_ID</code> with your SIM account.
+            </p>
+            <div id="td-strategy-orders-out" class="td-table-wrap muted">Not loaded.</div>
+          </details>
+
+          <details class="td-fold td-fold--nested">
+            <summary class="td-fold-summary">Broker orders — <code>broker_order</code></summary>
+            <div id="td-orders-out" class="td-table-wrap muted">Not loaded.</div>
+          </details>
+
+          <details class="td-fold td-fold--nested">
+            <summary class="td-fold-summary">Positions — <code>broker_position</code> (latest snapshot per symbol)</summary>
+            <p class="muted" style="margin: 0 0 0.35rem; font-size: 0.82rem; max-width: 52rem">
+              One row per account × symbol (SIM): quantity is the <strong>current</strong> snapshot from the worker, not a trade history. A 1-share flip on a large holding may not change the rounded total you notice — use broker orders and the live probe to verify fills.
+            </p>
+            <div id="td-positions-out" class="td-table-wrap muted">Not loaded.</div>
+          </details>
+
+          <details class="td-fold td-fold--nested">
+            <summary class="td-fold-summary">Position history — <code>broker_position_history</code></summary>
+            <p class="muted" style="margin: 0 0 0.35rem; font-size: 0.82rem; max-width: 52rem">
+              One append-only row per snapshot update (same columns as <code>broker_position</code>; unique on account × symbol × env × <code>as_of</code>).
+            </p>
+            <div id="td-position-history-out" class="td-table-wrap muted">Not loaded.</div>
+          </details>
+        </div>
+      </details>
+    </section>
+
+    <section id="panel-stock-history" class="panel">
+      <h2>Stock history</h2>
+      <p class="muted">
+        Unified timeline for one symbol: <code>market_strategy_order_request</code>, <code>broker_order</code>, and
+        <code>broker_position_history</code> (newest first). Optional <strong>correlation id</strong> filters all three;
+        leave it empty for the latest activity. Position rows include <code>correlation_id</code> when the worker
+        recorded it (place-order, reconcile, order-watch).
+      </p>
+      <div class="scheduler-controls" style="flex-wrap: wrap; align-items: flex-end; gap: 0.5rem; margin: 0.5rem 0">
+        <label class="form-label"
+          >Symbol
+          <select id="sh-symbol" class="scheduler-select" style="min-width: 8rem" aria-label="Stock symbol">
+            <option value="">Loading…</option>
+          </select>
+        </label>
+        <label class="form-label"
+          >Correlation id (optional)
+          <select
+            id="sh-correlation-id"
+            class="scheduler-select"
+            style="min-width: 18rem; max-width: min(28rem, 100vw)"
+            aria-label="Correlation id filter"
+            title="Choose a correlation id seen for this symbol, or leave as any"
+          >
+            <option value="">— (any)</option>
+          </select>
+        </label>
+        <label class="td-persist-limit-label muted"
+          >Limit
+          <input id="sh-limit" type="number" min="1" max="500" value="50" class="td-persist-limit-input" />
+        </label>
+        <button type="button" class="scheduler-exec" id="btn-sh-load">Load history</button>
+      </div>
+      <p id="sh-meta" class="muted" style="font-size: 0.82rem; margin: 0.25rem 0"></p>
+      <div id="sh-out" class="td-table-wrap muted">Open this tab and choose a symbol, then Load history.</div>
     </section>
 
     <section id="panel-data-acquisition" class="panel">
@@ -325,6 +544,16 @@
     </div>
   </dialog>
 
+  <dialog id="dialog-td-json" class="manifest-dialog manifest-dialog--wide" aria-labelledby="dialog-td-json-title">
+    <div class="manifest-dialog-inner">
+      <h3 id="dialog-td-json-title" class="manifest-dialog-title">JSON</h3>
+      <pre id="td-json-modal-pre" class="manifest-pre rmq-tap-json-pre" tabindex="0"></pre>
+      <div class="manifest-dialog-actions">
+        <button type="button" class="btn-manifest-close" id="btn-td-json-close">Close</button>
+      </div>
+    </div>
+  </dialog>
+
   <dialog id="dialog-rmq-tap-json" class="manifest-dialog manifest-dialog--wide" aria-labelledby="dialog-rmq-tap-json-title">
     <div class="manifest-dialog-inner">
       <h3 id="dialog-rmq-tap-json-title" class="manifest-dialog-title">Message (full JSON)</h3>
@@ -338,7 +567,17 @@
   <!-- Cached app.js may still reference prepareDbBtn in scheduler row templates; define before deferred bundle. -->
   <script>
     var prepareDbBtn = "";
+    function nelsonSyncUiBuildFingerprint() {
+      var m = document.querySelector('meta[name="nelson4-management-ui-build"]');
+      var el = document.getElementById("operator-ui-build-fingerprint");
+      if (m && el && m.content) el.textContent = " — build " + m.content;
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", nelsonSyncUiBuildFingerprint);
+    } else {
+      nelsonSyncUiBuildFingerprint();
+    }
   </script>
-  <script src="/assets/app.js?v=79" defer></script>
+  <script src="/assets/app.js?v=104" defer></script>
 </body>
 </html>

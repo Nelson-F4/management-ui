@@ -75,6 +75,14 @@ h2 { font-size: 1rem; margin-top: 0; }
 h3 { font-size: 0.9rem; color: var(--muted); }
 .muted { color: var(--muted); font-size: 0.9rem; }
 
+.operator-ui-build-fingerprint {
+  font-weight: 500;
+  font-size: 0.85em;
+  color: var(--muted);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
 .operator-version {
   font-weight: 400;
   font-size: 0.72em;
@@ -187,6 +195,10 @@ h3 { font-size: 0.9rem; color: var(--muted); }
   border-left: 3px solid var(--bad);
 }
 
+.health-check-row.skip {
+  border-left: 3px solid #4a5568;
+}
+
 .health-check-body {
   flex: 1;
   min-width: 0;
@@ -258,6 +270,16 @@ h3 { font-size: 0.9rem; color: var(--muted); }
   color: var(--bad);
 }
 
+.health-status-pill.skip {
+  background: #252a30;
+  color: var(--muted);
+}
+
+.health-check-row.skip .health-led {
+  background: var(--muted);
+  box-shadow: none;
+}
+
 .health-scheduler-extra {
   display: flex;
   align-items: center;
@@ -311,6 +333,23 @@ h3 { font-size: 0.9rem; color: var(--muted); }
 .registry-component.registry-component--disabled .health-led {
   background: var(--muted);
   box-shadow: none;
+}
+
+/* Built-in catalog row: supported extension, not “running enabled” until worker YAML loads it */
+.registry-component.registry-component--catalog {
+  border-left: 3px solid #4a5568;
+}
+
+.registry-component.registry-component--catalog .health-led {
+  background: var(--muted);
+  box-shadow: none;
+}
+
+.component-catalog-note {
+  font-size: 0.82rem;
+  line-height: 1.45;
+  max-width: 52rem;
+  margin: 0 0 0.65rem;
 }
 
 .registry-phase {
@@ -884,6 +923,14 @@ button.btn-da-toggle:disabled {
   font-size: 0.8rem;
   resize: vertical;
 }
+.form-st input {
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid #2f3336;
+  background: #000;
+  color: var(--fg);
+  font-size: 0.9rem;
+}
 .form-st select {
   padding: 0.45rem 0.65rem;
   border-radius: 6px;
@@ -1371,4 +1418,123 @@ button.btn-da-toggle:disabled {
 .rmq-tap-json-pre {
   max-height: min(70vh, 24rem);
   overflow: auto;
+}
+
+/* Trading desk tab */
+.td-json-out {
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  padding: 0.55rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid #2f3336;
+  background: #0a0c0f;
+  color: #e7e9ea;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.td-json-out.bad {
+  border-color: #7f1d1d;
+  color: #fecaca;
+}
+.td-probe-wrap {
+  margin: 0.5rem 0 0.9rem;
+}
+.td-account-help {
+  margin: 0.1rem 0 0.55rem;
+  font-size: 0.8rem;
+}
+.td-table-wrap {
+  overflow-x: auto;
+  margin: 0.35rem 0 1rem;
+}
+.td-table-wrap .st-task-table {
+  font-size: 0.78rem;
+}
+.td-json-view-btn {
+  font-size: 0.8rem;
+  padding: 0.35rem 0.55rem;
+  border-radius: 4px;
+  border: 1px solid #38444d;
+  background: #1d2f3d;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 600;
+}
+.td-json-view-btn--primary {
+  background: #175078;
+  border-color: var(--accent);
+  color: #fff;
+}
+.td-json-view-btn:hover {
+  background: #223a4a;
+}
+.td-json-view-btn--primary:hover {
+  background: #1d9bf0;
+}
+
+/* Trading desk: collapsible sections */
+details.td-fold {
+  margin: 0.65rem 0 1rem;
+  border: 1px solid #2f3336;
+  border-radius: 8px;
+  background: var(--card);
+  padding: 0.35rem 0.65rem 0.65rem;
+}
+details.td-fold > summary.td-fold-summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.92rem;
+  padding: 0.35rem 0.15rem;
+  list-style-position: outside;
+}
+details.td-fold > summary.td-fold-summary::-webkit-details-marker {
+  color: var(--muted);
+}
+.td-fold-body {
+  padding-top: 0.25rem;
+}
+.td-fold-h {
+  font-size: 0.88rem;
+  color: var(--muted);
+  margin: 0.5rem 0 0.35rem;
+}
+details.td-fold--nested {
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.35rem 0.55rem 0.55rem;
+  background: #0a0c0f;
+}
+details.td-fold--nested > summary.td-fold-summary {
+  font-size: 0.86rem;
+}
+.td-reconcile-pre {
+  max-height: min(70vh, 18rem);
+  overflow: auto;
+  margin: 0.35rem 0 0;
+}
+.td-persist-limit-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+.td-persist-limit-input {
+  width: 4.25rem;
+  padding: 0.35rem 0.45rem;
+  border-radius: 6px;
+  border: 1px solid #2f3336;
+  background: #000;
+  color: var(--fg);
+  font-size: 0.85rem;
+}
+.td-persist-auto-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  user-select: none;
+}
+.td-persist-auto-wrap input {
+  cursor: pointer;
 }
