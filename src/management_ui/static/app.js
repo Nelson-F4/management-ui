@@ -648,8 +648,16 @@ function _shTruncateSummary(text, maxLen) {
   return `${t.slice(0, Math.max(0, maxLen - 1))}…`;
 }
 
+/** Parse event_time (ISO or similar) for ordering; invalid → 0. */
+function stockHistoryEventMs(ev) {
+  if (!ev || ev.event_time == null) return 0;
+  const ms = Date.parse(String(ev.event_time));
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
 /**
- * Stock history: one collapsible block per correlation group; first expanded, rest collapsed.
+ * Stock history: one collapsible block per correlation group; only the **most recently active**
+ * group (largest max event_time in the group) is expanded; all others start collapsed.
  * @param {object[]} rows Row objects with correlation_id, event_time, event_type, …
  * @param {HTMLElement | null} containerEl
  */
@@ -688,6 +696,21 @@ function renderStockHistoryTable(rows, containerEl) {
     }
   }
 
+  let expandGroupIdx = 0;
+  let bestMs = -Infinity;
+  for (let i = 0; i < groups.length; i++) {
+    const rowsG = groups[i].rows;
+    let mx = 0;
+    for (const r of rowsG) {
+      const t = stockHistoryEventMs(r);
+      if (t > mx) mx = t;
+    }
+    if (mx > bestMs) {
+      bestMs = mx;
+      expandGroupIdx = i;
+    }
+  }
+
   const thead =
     '<thead><tr>' +
     keys.map((k) => `<th>${escapeHtml(String(columnLabels[k] || k))}</th>`).join("") +
@@ -703,7 +726,7 @@ function renderStockHistoryTable(rows, containerEl) {
     const titleShort = _shTruncateSummary(titleFull, 72);
     const n = g.rows.length;
     const latest = first.event_time != null ? String(first.event_time) : "—";
-    const openAttr = gi === 0 ? " open" : "";
+    const openAttr = gi === expandGroupIdx ? " open" : "";
 
     html += `<details class="sh-stock-group"${openAttr}>`;
     html += `<summary class="sh-stock-group-summary" title="${escapeAttr(titleFull)}">`;

@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="nelson4-management-ui-build" content="105-stock-history-collapse" />
+  <meta name="nelson4-management-ui-build" content="106-stock-history-expand-youngest" />
   <title>Operator control</title>
   <link rel="icon" href="/assets/favicon.svg?v=1" type="image/svg+xml" />
   <style id="management-ui-critical">
@@ -113,7 +113,7 @@
           id="operator-ui-build-fingerprint"
           class="operator-ui-build-fingerprint"
           title="Embedded in index.html; also in meta nelson4-management-ui-build. Rebuild control-plane image if this does not match your checkout."
-          > — build 105-stock-history-collapse</span>
+          > — build 106-stock-history-expand-youngest</span>
       </h2>
       <p class="muted">
         Manual <strong>market</strong> equity orders go to RabbitMQ on the same routing key the execution-runtime
@@ -295,7 +295,7 @@
         id are included even when older than the window. Rows without a correlation id only appear when in-window. Groups
         are ordered by newest activity; within a correlation, rows are newest first. Optional <strong>correlation id</strong>
         shows the full trace for that id (time window ignored). Each group is <strong>expand/collapse</strong> (click the
-        header); the <strong>first</strong> group starts open, the rest start closed.
+        header); the group with the <strong>newest activity</strong> (latest event time) starts open, the rest start closed.
       </p>
       <div class="scheduler-controls" style="flex-wrap: wrap; align-items: flex-end; gap: 0.5rem; margin: 0.5rem 0">
         <label class="form-label"
