@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="nelson4-management-ui-build" content="103-stock-history-cids" />
+  <meta name="nelson4-management-ui-build" content="105-stock-history-collapse" />
   <title>Operator control</title>
   <link rel="icon" href="/assets/favicon.svg?v=1" type="image/svg+xml" />
   <style id="management-ui-critical">
@@ -113,7 +113,7 @@
           id="operator-ui-build-fingerprint"
           class="operator-ui-build-fingerprint"
           title="Embedded in index.html; also in meta nelson4-management-ui-build. Rebuild control-plane image if this does not match your checkout."
-          > — build 103-stock-history-cids</span>
+          > — build 105-stock-history-collapse</span>
       </h2>
       <p class="muted">
         Manual <strong>market</strong> equity orders go to RabbitMQ on the same routing key the execution-runtime
@@ -290,9 +290,12 @@
       <h2>Stock history</h2>
       <p class="muted">
         Unified timeline for one symbol: <code>market_strategy_order_request</code>, <code>broker_order</code>, and
-        <code>broker_position_history</code> (newest first). Optional <strong>correlation id</strong> filters all three;
-        leave it empty for the latest activity. Position rows include <code>correlation_id</code> when the worker
-        recorded it (place-order, reconcile, order-watch).
+        <code>broker_position_history</code>. Default view: rows whose event time falls in the <strong>last N hours</strong>
+        (default 24). If any row in that window carries a <code>correlation_id</code>, <strong>all</strong> rows for that
+        id are included even when older than the window. Rows without a correlation id only appear when in-window. Groups
+        are ordered by newest activity; within a correlation, rows are newest first. Optional <strong>correlation id</strong>
+        shows the full trace for that id (time window ignored). Each group is <strong>expand/collapse</strong> (click the
+        header); the <strong>first</strong> group starts open, the rest start closed.
       </p>
       <div class="scheduler-controls" style="flex-wrap: wrap; align-items: flex-end; gap: 0.5rem; margin: 0.5rem 0">
         <label class="form-label"
@@ -302,13 +305,27 @@
           </select>
         </label>
         <label class="form-label"
+          >Last (hours)
+          <input
+            id="sh-since-hours"
+            type="number"
+            min="1"
+            max="8760"
+            value="24"
+            class="td-persist-limit-input"
+            style="width: 4.5rem"
+            aria-label="Include rows from the last N hours (and expand matching correlation ids)"
+            title="Event-time window for uncorrelated rows; correlation ids with any in-window row expand to full history"
+          />
+        </label>
+        <label class="form-label"
           >Correlation id (optional)
           <select
             id="sh-correlation-id"
             class="scheduler-select"
             style="min-width: 18rem; max-width: min(28rem, 100vw)"
             aria-label="Correlation id filter"
-            title="Choose a correlation id seen for this symbol, or leave as any"
+            title="Choose a correlation id seen for this symbol in the time window, or leave as any"
           >
             <option value="">— (any)</option>
           </select>

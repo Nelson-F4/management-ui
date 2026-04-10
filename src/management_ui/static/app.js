@@ -631,6 +631,103 @@ function renderTradingDeskTable(rows, containerEl, options) {
   containerEl.innerHTML = html;
 }
 
+/** Group key aligned with control-plane stock-history grouping (correlation or event_type:source_id). */
+function stockHistoryGroupKey(row) {
+  const c = String(row.correlation_id || "").trim();
+  if (c && c !== "—") return c;
+  return `${row.event_type}:${row.source_id}`;
+}
+
+/**
+ * @param {string} text
+ * @param {number} maxLen
+ */
+function _shTruncateSummary(text, maxLen) {
+  const t = String(text || "");
+  if (t.length <= maxLen) return t;
+  return `${t.slice(0, Math.max(0, maxLen - 1))}…`;
+}
+
+/**
+ * Stock history: one collapsible block per correlation group; first expanded, rest collapsed.
+ * @param {object[]} rows Row objects with correlation_id, event_time, event_type, …
+ * @param {HTMLElement | null} containerEl
+ */
+function renderStockHistoryTable(rows, containerEl) {
+  if (!containerEl) return;
+  ensureTdJsonViewDelegation();
+  _tdJsonViewStore.clear();
+  _tdJsonViewSeq = 0;
+  if (!rows || !rows.length) {
+    containerEl.innerHTML = "<p class=\"muted\">No rows.</p>";
+    containerEl.className = "td-table-wrap muted";
+    return;
+  }
+  containerEl.className = "td-table-wrap";
+  const keys = ["correlation_id", "event_time", "event_type", "position", "quantity", "status", "source_id", "detail"];
+  const columnLabels = {
+    correlation_id: "Correlation id",
+    event_time: "Time",
+    event_type: "Type",
+    position: "Position",
+    quantity: "Quantity",
+    status: "Status",
+    source_id: "Source id",
+    detail: "Detail",
+  };
+
+  /** @type {{ key: string, rows: object[] }[]} */
+  const groups = [];
+  for (const row of rows) {
+    const gk = stockHistoryGroupKey(row);
+    const last = groups[groups.length - 1];
+    if (last && last.key === gk) {
+      last.rows.push(row);
+    } else {
+      groups.push({ key: gk, rows: [row] });
+    }
+  }
+
+  const thead =
+    '<thead><tr>' +
+    keys.map((k) => `<th>${escapeHtml(String(columnLabels[k] || k))}</th>`).join("") +
+    "</tr></thead>";
+
+  let html = '<div class="sh-stock-groups">';
+  for (let gi = 0; gi < groups.length; gi++) {
+    const g = groups[gi];
+    const first = g.rows[0];
+    const cidDisp = String(first.correlation_id || "").trim();
+    const hasCid = cidDisp && cidDisp !== "—";
+    const titleFull = hasCid ? cidDisp : `Uncorrelated · ${first.event_type} #${first.source_id}`;
+    const titleShort = _shTruncateSummary(titleFull, 72);
+    const n = g.rows.length;
+    const latest = first.event_time != null ? String(first.event_time) : "—";
+    const openAttr = gi === 0 ? " open" : "";
+
+    html += `<details class="sh-stock-group"${openAttr}>`;
+    html += `<summary class="sh-stock-group-summary" title="${escapeAttr(titleFull)}">`;
+    html += `<span class="sh-stock-group-title">${escapeHtml(titleShort)}</span>`;
+    html += `<span class="sh-stock-group-meta muted">${n} row${n === 1 ? "" : "s"} · latest ${escapeHtml(latest)}</span>`;
+    html += "</summary>";
+    html += '<div class="sh-stock-group-body"><table class="st-task-table sh-stock-table sh-stock-group-table">';
+    html += thead;
+    html += "<tbody>";
+    for (let ri = 0; ri < g.rows.length; ri++) {
+      const row = g.rows[ri];
+      const trClass = ri === 0 ? "sh-stock-row sh-stock-row--group-start" : "sh-stock-row sh-stock-row--detail";
+      html += `<tr class="${trClass}">`;
+      for (const k of keys) {
+        html += `<td>${tdJsonViewCellHtml(row[k], k)}</td>`;
+      }
+      html += "</tr>";
+    }
+    html += "</tbody></table></div></details>";
+  }
+  html += "</div>";
+  containerEl.innerHTML = html;
+}
+
 function renderTradingDeskBrokerPositions(summary) {
   const out = $("#td-broker-positions-out");
   const sel = $("#td-account-id");
@@ -928,6 +1025,15 @@ function stockHistoryLimit() {
   return n;
 }
 
+function stockHistorySinceHours() {
+  const el = $("#sh-since-hours");
+  let n = parseInt(String(el?.value ?? "24"), 10);
+  if (Number.isNaN(n) || n < 1) n = 24;
+  if (n > 8760) n = 8760;
+  if (el) el.value = String(n);
+  return n;
+}
+
 /**
  * Derive stock-history table columns from event detail JSON (only non-empty when a matching field exists).
  * @param {unknown} detail
@@ -986,7 +1092,10 @@ async function loadStockHistoryCorrelationIds() {
   }
   cidEl.disabled = true;
   try {
-    const params = new URLSearchParams({ symbol: sym });
+    const params = new URLSearchParams({
+      symbol: sym,
+      since_hours: String(stockHistorySinceHours()),
+    });
     const data = await fetchJSON(`/api/v1/trading-desk/stock-history/correlation-ids?${params}`);
     if (!data || data.ok !== true || !Array.isArray(data.correlation_ids)) {
       return;
@@ -1049,6 +1158,7 @@ async function loadStockHistory() {
   }
   if (meta) meta.textContent = "";
   const params = new URLSearchParams({ symbol: sym, limit: String(lim) });
+  params.set("since_hours", String(stockHistorySinceHours()));
   if (cid) params.set("correlation_id", cid);
   try {
     const data = await fetchJSON(`/api/v1/trading-desk/stock-history?${params}`);
@@ -1063,30 +1173,27 @@ async function loadStockHistory() {
     const evs = Array.isArray(data.events) ? data.events : [];
     const rows = evs.map((ev) => {
       const derived = stockHistoryDerivedFromDetail(ev.detail);
+      const cidDisp = ev.correlation_id != null && ev.correlation_id !== "" ? String(ev.correlation_id) : "—";
       return {
+        correlation_id: cidDisp,
         event_time: ev.event_time,
         event_type: ev.event_type,
         position: derived.position,
         quantity: derived.quantity,
         status: derived.status,
-        correlation_id: ev.correlation_id != null && ev.correlation_id !== "" ? ev.correlation_id : "—",
         source_id: ev.source_id,
         detail: ev.detail != null ? JSON.stringify(ev.detail) : "",
       };
     });
     if (meta) {
+      const sh = data.since_hours != null ? data.since_hours : stockHistorySinceHours();
       meta.textContent =
         `total=${data.total != null ? data.total : rows.length} · symbol=${sym}` +
-        (cid ? ` · correlation_id=${cid}` : " · latest activity (no correlation filter)");
+        (cid
+          ? ` · correlation_id=${cid} (full trace; time window not applied)`
+          : ` · last ${sh}h window + expanded correlation traces`);
     }
-    renderTradingDeskTable(rows, out, {
-      skipClear: false,
-      columnLabels: {
-        position: "Position",
-        quantity: "Quantity",
-        status: "Status",
-      },
-    });
+    renderStockHistoryTable(rows, out);
   } catch (e) {
     if (out) {
       out.className = "td-table-wrap muted";
@@ -2328,6 +2435,11 @@ $("#btn-sh-load")?.addEventListener("click", () => {
 });
 
 $("#sh-symbol")?.addEventListener("change", () => {
+  void loadStockHistoryCorrelationIds();
+});
+
+$("#sh-since-hours")?.addEventListener("change", () => {
+  void stockHistorySinceHours();
   void loadStockHistoryCorrelationIds();
 });
 

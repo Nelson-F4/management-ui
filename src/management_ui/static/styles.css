@@ -970,6 +970,78 @@ button.btn-da-toggle:disabled {
 .st-task-table code {
   font-size: 0.75rem;
 }
+
+/* Stock history: collapsible correlation groups */
+.sh-stock-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.sh-stock-group {
+  border: 1px solid #3a4048;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+.sh-stock-group-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  padding: 0.5rem 0.65rem;
+  background: #252a30;
+  font-size: 0.82rem;
+  user-select: none;
+}
+.sh-stock-group-summary::-webkit-details-marker {
+  display: none;
+}
+.sh-stock-group-summary::marker {
+  content: "";
+}
+.sh-stock-group-summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 0.35rem;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+  font-size: 0.7rem;
+}
+.sh-stock-group[open] > .sh-stock-group-summary::before {
+  transform: rotate(90deg);
+}
+.sh-stock-group-title {
+  font-weight: 600;
+  color: var(--fg);
+  word-break: break-all;
+}
+.sh-stock-group-meta {
+  font-size: 0.75rem;
+}
+.sh-stock-group-body {
+  padding: 0.25rem 0.35rem 0.5rem;
+  overflow-x: auto;
+}
+.sh-stock-group-table {
+  margin: 0;
+}
+
+/* Within a group table: first row = newest (master), rest indented correlation col */
+.sh-stock-group-table .sh-stock-row--group-start td {
+  border-top: none;
+  padding-top: 0.4rem;
+}
+.sh-stock-group-table .sh-stock-row--group-start td:first-child {
+  font-weight: 600;
+}
+.sh-stock-group-table .sh-stock-row--detail td:first-child {
+  color: var(--muted);
+  font-size: 0.78rem;
+  padding-left: 0.85rem;
+}
+
 .st-task-actions {
   display: flex;
   flex-wrap: wrap;
